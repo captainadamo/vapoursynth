@@ -34,3 +34,5 @@ ltmain.sh
 missing
 vspipe
 *.pc
+.DS_Store
+src/cython/*.*
