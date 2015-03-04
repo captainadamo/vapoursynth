@@ -84,6 +84,18 @@ void getCPUFeatures(CPUFeatures *cpuFeatures) {
 #error Do not know how to get CPU features on Linux.
 #endif
 }
+#elif defined(VS_TARGET_OS_IOS)
+void getCPUFeatures(CPUFeatures *cpuFeatures) {
+    memset(cpuFeatures, 0, sizeof(CPUFeatures));
+    
+    cpuFeatures->can_run_vs = 1;
+    cpuFeatures->half_fp = 1;
+    cpuFeatures->edsp = 1;
+    cpuFeatures->iwmmxt = 1;
+    cpuFeatures->neon = 1;
+    cpuFeatures->fast_mult = 1;
+    cpuFeatures->idiv_a = 1;
+}
 #else
 #error Do not know how to get CPU features.
 #endif

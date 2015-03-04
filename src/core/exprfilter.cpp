@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <memory>
+#include <cmath>
 #include "VapourSynth.h"
 #include "VSHelper.h"
 #include "exprfilter.h"
