@@ -24,3 +24,9 @@ SelectEvery
    Duplicate every fourth frame::
 
       SelectEvery(clip=clip, cycle=4, offsets=[0, 1, 2, 3, 3])
+
+   In Python, std.SelectEvery can also be invoked by :ref:`slicing a clip <pythonreference>`.
+
+   The clip's frame rate is multiplied by the number of offsets and
+   divided by *cycle*. The frame durations are multiplied by *cycle* and
+   divided by the number of offsets.

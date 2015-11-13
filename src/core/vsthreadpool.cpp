@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2012-2013 Fredrik Mellbin
+* Copyright (c) 2012-2015 Fredrik Mellbin
 *
 * This file is part of VapourSynth.
 *
@@ -19,10 +19,14 @@
 */
 
 #include "vscore.h"
-#include <assert.h>
+#include <cassert>
 #ifdef VS_TARGET_CPU_X86
 #include "x86utils.h"
 #endif
+
+bool VSThreadPool::taskCmp(const PFrameContext &a, const PFrameContext &b) {
+    return (a->reqOrder < b->reqOrder) || (a->reqOrder == b->reqOrder && a->n < b->n);
+}
 
 void VSThreadPool::runTasks(VSThreadPool *owner, std::atomic<bool> &stop) {
 #ifdef VS_TARGET_CPU_X86
@@ -43,9 +47,11 @@ void VSThreadPool::runTasks(VSThreadPool *owner, std::atomic<bool> &stop) {
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Go through all tasks from the top (oldest) and process the first one possible
-        for (std::list<PFrameContext>::iterator iter = owner->tasks.begin(); iter != owner->tasks.end(); ++iter) {
+        owner->tasks.sort(taskCmp);
+
+        for (auto iter = owner->tasks.begin(); iter != owner->tasks.end(); ++iter) {
             FrameContext *mainContext = iter->get();
-            FrameContext *leafContext = NULL;
+            FrameContext *leafContext = nullptr;
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Handle the output tasks
@@ -90,7 +96,7 @@ void VSThreadPool::runTasks(VSThreadPool *owner, std::atomic<bool> &stop) {
                 // no frame in progress?
                 if (clip->serialFrame == -1) {
                     clip->serialFrame = mainContext->n;
-                //
+                // another frame already in progress?
                 } else if (clip->serialFrame != mainContext->n) {
                     clip->serialMutex.unlock();
                     continue;
@@ -135,8 +141,8 @@ void VSThreadPool::runTasks(VSThreadPool *owner, std::atomic<bool> &stop) {
 
             owner->tasks.erase(iter);
 
-            /////////////////////////////////////////////////////////////////////////////////////////////
-            // Figure out the activation reason
+/////////////////////////////////////////////////////////////////////////////////////////////
+// Figure out the activation reason
 
             VSActivationReason ar = arInitial;
             bool skipCall = false; // Used to avoid multiple error calls for the same frame request going into a filter
@@ -166,12 +172,20 @@ void VSThreadPool::runTasks(VSThreadPool *owner, std::atomic<bool> &stop) {
 
             VSFrameContext externalFrameCtx(mainContextRef);
             assert(ar == arError || !mainContext->hasError());
+#ifdef VS_FRAME_REQ_DEBUG
+            vsWarning("Entering: %s Frame: %d Index: %d AR: %d", mainContext->clip->name.c_str(), mainContext->n, mainContext->index, (int)ar);
+#endif
             PVideoFrame f;
             if (!skipCall)
                 f = clip->getFrameInternal(mainContext->n, ar, externalFrameCtx);
             ranTask = true;
+#ifdef VS_FRAME_REQ_DEBUG
+            vsWarning("Exiting: %s Frame: %d Index: %d AR: %d", mainContext->clip->name.c_str(), mainContext->n, mainContext->index, (int)ar);
+#endif
             bool frameProcessingDone = f || mainContext->hasError();
-
+            if (mainContext->hasError() && f)
+                vsFatal("A frame was returned by %s but an error was also set, this is not allowed", clip->name.c_str());
+                
 /////////////////////////////////////////////////////////////////////////////////////////////
 // Unlock so the next job can run on the context
             if (filterMode == fmUnordered) {
@@ -269,7 +283,7 @@ void VSThreadPool::runTasks(VSThreadPool *owner, std::atomic<bool> &stop) {
     }
 }
 
-VSThreadPool::VSThreadPool(VSCore *core, int threads) : core(core), activeThreads(0), idleThreads(0), stopThreads(false), ticks(0) {
+VSThreadPool::VSThreadPool(VSCore *core, int threads) : core(core), activeThreads(0), idleThreads(0), reqCounter(0), stopThreads(false), ticks(0) {
     setThreadCount(threads);
 }
 
@@ -321,6 +335,7 @@ void VSThreadPool::notifyCaches(bool needMemory) {
 void VSThreadPool::start(const PFrameContext &context) {
     assert(context);
     std::lock_guard<std::mutex> l(lock);
+    context->reqOrder = ++reqCounter;
     startInternal(context);
 }
 
@@ -331,7 +346,7 @@ void VSThreadPool::returnFrame(const PFrameContext &rCtx, const PVideoFrame &f) 
     lock.unlock();
     VSFrameRef *ref = new VSFrameRef(f);
     callbackLock.lock();
-    rCtx->frameDone(rCtx->userData, ref, rCtx->n, rCtx->node, NULL);
+    rCtx->frameDone(rCtx->userData, ref, rCtx->n, rCtx->node, nullptr);
     callbackLock.unlock();
     lock.lock();
 }
@@ -342,7 +357,7 @@ void VSThreadPool::returnFrame(const PFrameContext &rCtx, const std::string &err
     // AND so that slow callbacks will only block operations in this thread, not all the others
     lock.unlock();
     callbackLock.lock();
-    rCtx->frameDone(rCtx->userData, NULL, rCtx->n, rCtx->node, errMsg.c_str());
+    rCtx->frameDone(rCtx->userData, nullptr, rCtx->n, rCtx->node, errMsg.c_str());
     callbackLock.unlock();
     lock.lock();
 }
@@ -387,6 +402,7 @@ void VSThreadPool::startInternal(const PFrameContext &context) {
                 // add it to the list of contexts to notify when it's available
                 context->notificationChain = ctx->notificationChain;
                 ctx->notificationChain = context;
+                ctx->reqOrder = std::min(ctx->reqOrder, context->reqOrder);
             }
         } else {
             // create a new context and append it to the tasks

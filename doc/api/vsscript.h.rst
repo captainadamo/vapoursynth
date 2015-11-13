@@ -186,6 +186,8 @@ vsscript_getError
 .. c:function:: const char * vsscript_getError(VSScript *handle)
 
     Returns the error message from a script environment, or NULL, if there is no error message.
+
+    It is okay to pass NULL.
     
     VSScript retains ownership of the pointer.
 

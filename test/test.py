@@ -1,6 +1,12 @@
 import unittest
 import vapoursynth as vs
 
+def float_lut(x):
+    return float(1)
+
+def int_lut(x):
+    return int(1)
+
 class CoreTestSequence(unittest.TestCase):
 
     def setUp(self):
@@ -110,12 +116,30 @@ class CoreTestSequence(unittest.TestCase):
         clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
         with self.assertRaises(vs.Error):
             self.core.std.Lut(clip, function=lambda x: x, planes=[3])
+        
+    def test_lut_arg10(self):
+        clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
+        with self.assertRaises(vs.Error):
+            self.core.std.Lut(clip, function=float_lut, floatout=False)
+            
+    def test_lut_arg11(self):
+        clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
+        self.core.std.Lut(clip, function=float_lut, floatout=True)
+        
+    def test_lut_arg12(self):
+        clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
+        with self.assertRaises(vs.Error):
+            self.core.std.Lut(clip, function=int_lut, floatout=True)
+            
+    def test_lut_arg13(self):
+        clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
+        self.core.std.Lut(clip, function=int_lut, floatout=False)
 
 #lut2 argument tests
     def test_lut2_arg1(self):
         clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
         with self.assertRaises(vs.Error):
-            self.core.std.Lut2(clip, clip, lut=[5]*65536, function=lambda x,y: (x+y)/2)
+            self.core.std.Lut2(clip, clip, lut=[5]*65536, function=lambda x,y: (x+y)//2)
 
     def test_lut2_arg2(self):
         clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
@@ -139,7 +163,7 @@ class CoreTestSequence(unittest.TestCase):
     def test_lut2_arg6(self):
         clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
         with self.assertRaises(vs.Error):
-            self.core.std.Lut2(clip, clip, lut=[5]*65535, function=lambda x,y: (x+y)/2)
+            self.core.std.Lut2(clip, clip, lut=[5]*65535, function=lambda x,y: (x+y)//2)
 
     def test_lut2_arg7(self):
         clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
@@ -148,13 +172,14 @@ class CoreTestSequence(unittest.TestCase):
 
     def test_lut2_arg8(self):
         clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
-        self.core.std.Lut2(clip, clip, function=lambda x,y: (x+y)/2)
+        self.core.std.Lut2(clip, clip, function=lambda x,y: (x+y)//2)
 
     def test_lut2_arg9(self):
         clip = self.core.std.BlankClip(format=vs.YUV420P8, color=[69, 242, 115])
         with self.assertRaises(vs.Error):
-            self.core.std.Lut2(clip, clip, function=lambda x,y: (x+y)/2, planes=[3])
-
+            self.core.std.Lut2(clip, clip, function=lambda x,y: (x+y)//2, planes=[3])
+            
+#shuffleplanes argument tests
     def test_suffleplanes_arg1(self):
         clip = self.core.std.BlankClip(format=vs.YUV420P8)
         with self.assertRaises(vs.Error):
@@ -184,7 +209,7 @@ class CoreTestSequence(unittest.TestCase):
         clip1 = self.core.std.BlankClip(format=vs.YUV420P8)
         clip2 = self.core.std.BlankClip(format=vs.RGB24)
         with self.assertRaises(vs.Error):
-            self.core.std.ShufflePlanes([clip1, clip2, clip1], planes=[0, 1, 2], colorfamily=vs.RGB)
+            self.core.std.ShufflePlanes([clip1, clip2, clip1], planes=[0, 1, 2], colorfamily=vs.RGB)               
 
 if __name__ == '__main__':
     unittest.main()

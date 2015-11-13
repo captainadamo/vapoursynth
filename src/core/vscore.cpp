@@ -23,18 +23,19 @@
 #include "version.h"
 #ifndef VS_TARGET_OS_WINDOWS
 #include <dirent.h>
-#include <stddef.h>
+#include <cstddef>
 #include <unistd.h>
 #include "settings.h"
 #endif
-#include <assert.h>
+#include <cassert>
 
 #ifdef VS_TARGET_CPU_X86
 #include "x86utils.h"
 #endif
 
 #ifdef VS_TARGET_OS_WINDOWS
-#include <ShlObj.h>
+#include <shlobj.h>
+#include <locale>
 #include <codecvt>
 #endif
 
@@ -49,6 +50,7 @@ extern "C" {
 #include "cachefilter.h"
 #include "exprfilter.h"
 #include "textfilter.h"
+#include "genericfilters.h"
 
 static inline bool isAlpha(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
@@ -84,7 +86,7 @@ static std::wstring readRegistryValue(const std::wstring keyName, const std::wst
     WCHAR szBuffer[512];
     DWORD dwBufferSize = sizeof(szBuffer);
     ULONG nError;
-    nError = RegQueryValueEx(hKey, valueName.c_str(), 0, NULL, (LPBYTE)szBuffer, &dwBufferSize);
+    nError = RegQueryValueEx(hKey, valueName.c_str(), 0, nullptr, (LPBYTE)szBuffer, &dwBufferSize);
     RegCloseKey(hKey);
     if (ERROR_SUCCESS == nError)
         return szBuffer;
@@ -93,11 +95,11 @@ static std::wstring readRegistryValue(const std::wstring keyName, const std::wst
 #endif
 
 FrameContext::FrameContext(int n, int index, VSNode *clip, const PFrameContext &upstreamContext) :
-numFrameRequests(0), n(n), node(NULL), clip(clip), upstreamContext(upstreamContext), userData(NULL), frameDone(NULL), error(false), lastCompletedN(-1), index(index), lastCompletedNode(NULL), frameContext(NULL) {
+    reqOrder(upstreamContext->reqOrder), numFrameRequests(0), n(n), clip(clip), upstreamContext(upstreamContext), userData(nullptr), frameDone(nullptr), error(false), node(nullptr), lastCompletedN(-1), index(index), lastCompletedNode(nullptr), frameContext(nullptr) {
 }
 
 FrameContext::FrameContext(int n, int index, VSNodeRef *node, VSFrameDoneCallback frameDone, void *userData) :
-numFrameRequests(0), n(n), node(node), clip(node->clip.get()), userData(userData), frameDone(frameDone), error(false), lastCompletedN(-1), index(index), lastCompletedNode(NULL), frameContext(NULL) {
+    reqOrder(0), numFrameRequests(0), n(n), clip(node->clip.get()), userData(userData), frameDone(frameDone), error(false), node(node), lastCompletedN(-1), index(index), lastCompletedNode(nullptr), frameContext(nullptr) {
 }
 
 bool FrameContext::setError(const std::string &errorMsg) {
@@ -111,7 +113,7 @@ bool FrameContext::setError(const std::string &errorMsg) {
 ///////////////
 
 
-VSVariant::VSVariant(VSVType vtype) : vtype(vtype), internalSize(0), storage(NULL) {
+VSVariant::VSVariant(VSVType vtype) : vtype(vtype), internalSize(0), storage(nullptr) {
 }
 
 VSVariant::VSVariant(const VSVariant &v) : vtype(v.vtype), internalSize(v.internalSize), storage(nullptr) {
@@ -129,6 +131,7 @@ VSVariant::VSVariant(const VSVariant &v) : vtype(v.vtype), internalSize(v.intern
             storage = new FrameList(*reinterpret_cast<FrameList *>(v.storage)); break;
         case VSVariant::vMethod:
             storage = new FuncList(*reinterpret_cast<FuncList *>(v.storage)); break;
+        default:;
         }
     }
 }
@@ -154,6 +157,7 @@ VSVariant::~VSVariant() {
             delete reinterpret_cast<FrameList *>(storage); break;
         case VSVariant::vMethod:
             delete reinterpret_cast<FuncList *>(storage); break;
+        default:;
         }
     }
 }
@@ -219,41 +223,141 @@ void VSVariant::initStorage(VSVType t) {
             storage = new FrameList(); break;
         case VSVariant::vMethod:
             storage = new FuncList(); break;
+        default:;
         }
     }
 }
 
 ///////////////
 
-VSPlaneData::VSPlaneData(uint32_t size, MemoryUse *mem) : mem(mem), size(size) {
-    data = vs_aligned_malloc<uint8_t>(size, VSFrame::alignment);
+void MemoryUse::add(size_t bytes) {
+    used.fetch_add(bytes);
+}
+
+void MemoryUse::subtract(size_t bytes) {
+    used.fetch_sub(bytes);
+}
+
+uint8_t *MemoryUse::allocBuffer(size_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto iter = buffers.lower_bound(bytes);
+    if (iter != buffers.end()) {
+        if (iter->first <= (bytes + (bytes >> 3))) {
+            unusedBufferSize -= iter->first;
+            uint8_t *buf = iter->second;
+            buffers.erase(iter);
+            return buf + VSFrame::alignment;
+        }
+    }
+
+    uint8_t *buf = vs_aligned_malloc<uint8_t>(VSFrame::alignment + bytes, VSFrame::alignment);
+    memcpy(buf, &bytes, sizeof(bytes));
+    return buf + VSFrame::alignment;
+}
+
+void MemoryUse::freeBuffer(uint8_t *buf) {
+    assert(buf);
+    std::lock_guard<std::mutex> lock(mutex);
+    buf -= VSFrame::alignment;
+    size_t bytes;
+    memcpy(&bytes, buf, sizeof(bytes));
+    buffers.emplace(std::make_pair(bytes, buf));
+    unusedBufferSize += bytes;
+    while (unusedBufferSize > 1024 * 1024 * 100) {
+        std::uniform_int_distribution<size_t> randSrc(0, buffers.size() - 1);
+        auto iter = buffers.begin();
+        std::advance(iter, randSrc(generator));
+        assert(unusedBufferSize >= iter->first);
+        unusedBufferSize -= iter->first;
+        vs_aligned_free(iter->second);
+        buffers.erase(iter);
+    }
+}
+
+size_t MemoryUse::memoryUse() {
+    return used;
+}
+
+size_t MemoryUse::getLimit() {
+    return maxMemoryUse;
+}
+
+int64_t MemoryUse::setMaxMemoryUse(int64_t bytes) {
+    if (bytes > 0 && static_cast<uint64_t>(bytes) <= SIZE_MAX)
+        maxMemoryUse = static_cast<size_t>(bytes);
+    return maxMemoryUse;
+}
+
+bool MemoryUse::isOverLimit() {
+    return used > maxMemoryUse;
+}
+
+void MemoryUse::signalFree() {
+    freeOnZero = true;
+    if (!used)
+        delete this;
+}
+
+MemoryUse::MemoryUse() : used(0), freeOnZero(false), unusedBufferSize(0) {
+    // 1GB
+    maxMemoryUse = 1024 * 1024 * 1024;
+}
+
+MemoryUse::~MemoryUse() {
+    for (auto &iter : buffers)
+        vs_aligned_free(iter.second);
+}
+
+///////////////
+
+VSPlaneData::VSPlaneData(size_t dataSize, MemoryUse &mem) : mem(mem), size(dataSize + 2 * VSFrame::guardSpace) {
+#ifdef VS_FRAME_POOL
+    data = mem.allocBuffer(size + 2 * VSFrame::guardSpace);
+#else
+    data = vs_aligned_malloc<uint8_t>(size + 2 * VSFrame::guardSpace, VSFrame::alignment);
+#endif
     assert(data);
     if (!data)
         vsFatal("Failed to allocate memory for planes. Out of memory.");
-    mem->add(size);
+    mem.add(size);
+#ifdef VS_FRAME_GUARD
+    for (size_t i = 0; i < VSFrame::guardSpace / sizeof(VS_FRAME_GUARD_PATTERN); i++) {
+        reinterpret_cast<uint32_t *>(data)[i] = VS_FRAME_GUARD_PATTERN;
+        reinterpret_cast<uint32_t *>(data + size - VSFrame::guardSpace)[i] = VS_FRAME_GUARD_PATTERN;
+    }
+#endif
 }
 
-VSPlaneData::VSPlaneData(const VSPlaneData &d) {
-    size = d.size;
-    mem = d.mem;
+VSPlaneData::VSPlaneData(const VSPlaneData &d) : mem(d.mem), size(d.size) {
+#ifdef VS_FRAME_POOL
+    data = mem.allocBuffer(size);
+#else
     data = vs_aligned_malloc<uint8_t>(size, VSFrame::alignment);
+#endif
     assert(data);
     if (!data)
         vsFatal("Failed to allocate memory for plane in copy constructor. Out of memory.");
-    mem->add(size);
+    mem.add(size);
     memcpy(data, d.data, size);
 }
 
 VSPlaneData::~VSPlaneData() {
+#ifdef VS_FRAME_POOL
+    mem.freeBuffer(data);
+#else
     vs_aligned_free(data);
-    mem->subtract(size);
+#endif
+    mem.subtract(size);
 }
 
 ///////////////
 
 VSFrame::VSFrame(const VSFormat *f, int width, int height, const VSFrame *propSrc, VSCore *core) : format(f), width(width), height(height) {
-    if (!f || width <= 0 || height <= 0)
-        vsFatal("Invalid new frame");
+    if (!f)
+        vsFatal("Error in frame creation: null format");
+
+    if (width <= 0 || height <= 0)
+        vsFatal("Error in frame creation: dimensions are negative (%dx%d)", width, height);
 
     if (propSrc)
         properties = propSrc->properties;
@@ -269,17 +373,20 @@ VSFrame::VSFrame(const VSFormat *f, int width, int height, const VSFrame *propSr
         stride[2] = 0;
     }
 
-    data[0] = std::make_shared<VSPlaneData>(stride[0] * height, core->memory);
+    data[0] = std::make_shared<VSPlaneData>(stride[0] * height, *core->memory);
     if (f->numPlanes == 3) {
         int size23 = stride[1] * (height >> f->subSamplingH);
-        data[1] = std::make_shared<VSPlaneData>(size23, core->memory);
-        data[2] = std::make_shared<VSPlaneData>(size23, core->memory);
+        data[1] = std::make_shared<VSPlaneData>(size23, *core->memory);
+        data[2] = std::make_shared<VSPlaneData>(size23, *core->memory);
     }
 }
 
 VSFrame::VSFrame(const VSFormat *f, int width, int height, const VSFrame * const *planeSrc, const int *plane, const VSFrame *propSrc, VSCore *core) : format(f), width(width), height(height) {
-    if (!f || width <= 0 || height <= 0)
-        vsFatal("Invalid new frame");
+    if (!f)
+        vsFatal("Error in frame creation: null format");
+
+    if (width <= 0 || height <= 0)
+        vsFatal("Error in frame creation: dimensions are negative (%dx%d)", width, height);
 
     if (propSrc)
         properties = propSrc->properties;
@@ -298,15 +405,15 @@ VSFrame::VSFrame(const VSFormat *f, int width, int height, const VSFrame * const
     for (int i = 0; i < format->numPlanes; i++) {
         if (planeSrc[i]) {
             if (plane[i] < 0 || plane[i] >= planeSrc[i]->format->numPlanes)
-                vsFatal("Plane does not exist, error in frame creation");
+                vsFatal("Error in frame creation: plane %d does not exist in the source frame", plane[i]);
             if (planeSrc[i]->getHeight(plane[i]) != getHeight(i) || planeSrc[i]->getWidth(plane[i]) != getWidth(i))
-                vsFatal("Copied plane dimensions do not match, error in frame creation");
+                vsFatal("Error in frame creation: dimensions of plane %d do not match. Source: %dx%d; destination: %dx%d", plane[i], planeSrc[i]->getWidth(plane[i]), planeSrc[i]->getHeight(plane[i]), getWidth(i), getHeight(i));
             data[i] = planeSrc[i]->data[plane[i]];
         } else {
             if (i == 0) {
-                data[i] = std::make_shared<VSPlaneData>(stride[0] * height, core->memory);
+                data[i] = std::make_shared<VSPlaneData>(stride[0] * height, *core->memory);
             } else {
-                data[i] = std::make_shared<VSPlaneData>(stride[i] * (height >> f->subSamplingH), core->memory);
+                data[i] = std::make_shared<VSPlaneData>(stride[i] * (height >> f->subSamplingH), *core->memory);
             }
         }
     }
@@ -328,35 +435,43 @@ VSFrame::VSFrame(const VSFrame &f) {
 int VSFrame::getStride(int plane) const {
     assert(plane >= 0 && plane < 3);
     if (plane < 0 || plane >= format->numPlanes)
-        vsFatal("Invalid plane stride requested");
+        vsFatal("Requested stride of nonexistent plane %d", plane);
     return stride[plane];
 }
 
 const uint8_t *VSFrame::getReadPtr(int plane) const {
     if (plane < 0 || plane >= format->numPlanes)
-        vsFatal("Invalid plane requested");
+        vsFatal("Requested read pointer for nonexistent plane %d", plane);
 
-    switch (plane) {
-    case 0:
-        return data[0]->data;
-    case 1:
-        return data[1]->data;
-    case 2:
-        return data[2]->data;
-    default:
-        return NULL;
-    }
+    return data[plane]->data + guardSpace;
 }
 
 uint8_t *VSFrame::getWritePtr(int plane) {
     if (plane < 0 || plane >= format->numPlanes)
-        vsFatal("Invalid plane requested");
+        vsFatal("Requested write pointer for nonexistent plane %d", plane);
 
     // copy the plane data if this isn't the only reference
     if (!data[plane].unique())
         data[plane] = std::make_shared<VSPlaneData>(*data[plane].get());
-    return data[plane]->data;
+
+    return data[plane]->data + guardSpace;
 }
+
+#ifdef VS_FRAME_GUARD
+bool VSFrame::verifyGuardPattern() {
+    for (int p = 0; p < format->numPlanes; p++) {
+        for (size_t i = 0; i < guardSpace / sizeof(VS_FRAME_GUARD_PATTERN); i++) {
+            uint32_t p1 = reinterpret_cast<uint32_t *>(data[p]->data)[i];
+            uint32_t p2 = reinterpret_cast<uint32_t *>(data[p]->data + data[p]->size - guardSpace)[i];
+            if (reinterpret_cast<uint32_t *>(data[p]->data)[i] != VS_FRAME_GUARD_PATTERN ||
+                reinterpret_cast<uint32_t *>(data[p]->data + data[p]->size - guardSpace)[i] != VS_FRAME_GUARD_PATTERN)
+                return false;
+        }
+    }
+
+    return true;
+}
+#endif
 
 struct split1 {
     enum empties_t { empties_ok, no_empties };
@@ -393,7 +508,7 @@ VSFunction::VSFunction(const std::string &argString, VSPublicFunction func, void
         split(argParts, arg, std::string(":"), split1::no_empties);
 
         if (argParts.size() < 2)
-            vsFatal("Invalid argument specifier: %s", arg.c_str());
+            vsFatal("Invalid argument specifier '%s'. It appears to be incomplete.", arg.c_str());
 
         bool arr = false;
         enum FilterArgumentType type = faNone;
@@ -428,7 +543,7 @@ VSFunction::VSFunction(const std::string &argString, VSPublicFunction func, void
             else if (typeName == "func[]")
                 type = faFunc;
             else
-                vsFatal("Invalid arg string: %s", typeName.c_str());
+                vsFatal("Argument '%s' has invalid type '%s'.", argName.c_str(), typeName.c_str());
         }
 
         bool opt = false;
@@ -437,22 +552,22 @@ VSFunction::VSFunction(const std::string &argString, VSPublicFunction func, void
         for (size_t i = 2; i < argParts.size(); i++) {
             if (argParts[i] == "opt") {
                 if (opt)
-                    vsFatal("Duplicate argument specifier: %s", argParts[i].c_str());
+                    vsFatal("Argument '%s' has duplicate argument specifier '%s'", argName.c_str(), argParts[i].c_str());
                 opt = true;
             } else if (argParts[i] == "empty") {
                 if (empty)
-                    vsFatal("Duplicate argument specifier: %s", argParts[i].c_str());
+                    vsFatal("Argument '%s' has duplicate argument specifier '%s'", argName.c_str(), argParts[i].c_str());
                 empty = true;
             }  else {
-                vsFatal("Unknown argument modifier: %s", argParts[i].c_str());
+                vsFatal("Argument '%s' has unknown argument modifier '%s'", argName.c_str(), argParts[i].c_str());
             }
         }
 
         if (!isValidIdentifier(argName))
-            vsFatal("Illegal argument identifier specified for function");
+            vsFatal("Argument name '%s' contains illegal characters.", argName.c_str());
 
         if (empty && !arr)
-            vsFatal("Only array arguments can have the empty flag set");
+            vsFatal("Argument '%s' is not an array. Only array arguments can have the empty flag set.", argName.c_str());
 
         args.push_back(FilterArgument(argName, type, arr, empty, opt));
     }
@@ -462,7 +577,7 @@ VSNode::VSNode(const VSMap *in, VSMap *out, const std::string &name, VSFilterIni
 instanceData(instanceData), name(name), init(init), filterGetFrame(getFrame), free(free), filterMode(filterMode), apiMajor(apiMajor), core(core), flags(flags), hasVi(false), serialFrame(-1) {
 
     if (flags & ~(nfNoCache | nfIsCache))
-        vsFatal("Filter %s specified unknown flags", name.c_str());
+        vsFatal("Filter %s specified unknown flags (%d)", name.c_str(), flags);
 
     if ((flags & nfIsCache) && !(flags & nfNoCache))
         vsFatal("Filter %s specified an illegal combination of flags (%d)", name.c_str(), flags);
@@ -478,6 +593,13 @@ instanceData(instanceData), name(name), init(init), filterGetFrame(getFrame), fr
 
     if (!hasVi)
         vsFatal("Filter %s didn't set vi", name.c_str());
+
+    for (const auto &iter : vi) {
+        if (iter.numFrames <= 0) {
+            core->filterInstanceDestroyed();
+            throw VSException("Creation of filter " + name + " aborted, zero (unknown) and negative length clips not allowed");
+        }
+    }
 }
 
 VSNode::~VSNode() {
@@ -492,18 +614,25 @@ void VSNode::getFrame(const PFrameContext &ct) {
 }
 
 const VSVideoInfo &VSNode::getVideoInfo(int index) {
-    if (index < 0 || index >= (int)vi.size())
-        vsFatal("Out of bounds videoinfo index");
+    if (index < 0 || index >= static_cast<int>(vi.size()))
+        vsFatal("getVideoInfo: Out of bounds videoinfo index %d. Valid range: [0,%d].", index, static_cast<int>(vi.size() - 1));
     return vi[index];
 }
+
 void VSNode::setVideoInfo(const VSVideoInfo *vi, int numOutputs) {
     if (numOutputs < 1)
-        vsFatal("Video filter needs to have at least one output");
+        vsFatal("setVideoInfo: Video filter %s needs to have at least one output (%d were given).", name.c_str(), numOutputs);
     for (int i = 0; i < numOutputs; i++) {
         if ((!!vi[i].height) ^ (!!vi[i].width))
-            vsFatal("Variable dimension clips must have both width and height set to 0");
+            vsFatal("setVideoInfo: Variable dimension clips must have both width and height set to 0. Dimensions given by filter %s: %dx%d.", name.c_str(), vi[i].width, vi[i].height);
         if (vi[i].format && !core->isValidFormatPointer(vi[i].format))
-            vsFatal("The VSFormat pointer passed to setVideoInfo() was not gotten from registerFormat() or getFormatPreset()");
+            vsFatal("setVideoInfo: The VSFormat pointer passed by %s was not obtained from registerFormat() or getFormatPreset().", name.c_str());
+        int64_t num = vi[i].fpsNum;
+        int64_t den = vi[i].fpsDen;
+        vs_normalizeRational(&num, &den);
+        if (num != vi[i].fpsNum || den != vi[i].fpsDen)
+            vsFatal(("setVideoInfo: The frame rate specified by " + name + " must be a reduced fraction. (Instead, it is " + std::to_string(vi[i].fpsNum) + "/" + std::to_string(vi[i].fpsDen) + ".)").c_str());
+
         this->vi.push_back(vi[i]);
         this->vi[i].flags = flags;
     }
@@ -525,17 +654,22 @@ PVideoFrame VSNode::getFrameInternal(int n, int activationReason, VSFrameContext
 #endif
 
     if (r) {
-        PVideoFrame p(r->frame);
+        PVideoFrame p(std::move(r->frame));
         delete r;
         const VSFormat *fi = p->getFormat();
         const VSVideoInfo &lvi = vi[frameCtx.ctx->index];
 
         if (!lvi.format && fi->colorFamily == cmCompat)
-            vsFatal("Illegal compat frame returned");
+            vsFatal("Illegal compat frame returned by %s.", name.c_str());
         else if (lvi.format && lvi.format != fi)
-            vsFatal("Frame returned not of the declared type");
+            vsFatal("Filter %s declared the format %s (id %d), but it returned a frame with the format %s (id %d).", name.c_str(), lvi.format->name, lvi.format->id, fi->name, fi->id);
         else if ((lvi.width || lvi.height) && (p->getWidth(0) != lvi.width || p->getHeight(0) != lvi.height))
-            vsFatal("Frame returned of not of the declared dimensions");
+            vsFatal("Filter %s declared the size %dx%d, but it returned a frame with the size %dx%d.", name.c_str(), lvi.width, lvi.height, p->getWidth(0), p->getHeight(0));
+
+#ifdef VS_FRAME_GUARD
+        if (!p->verifyGuardPattern())
+            vsFatal("Guard memory corrupted in frame %d returned from %s", n, name.c_str());
+#endif
 
         return p;
     }
@@ -659,6 +793,7 @@ const VSFormat *VSCore::registerFormat(VSColorFamily colorFamily, VSSampleType s
         case cmYCoCg:
             sprintf(f->name, "YCoCgssw%dssh%dP%s%d", subSamplingW, subSamplingH, sampleTypeStr, bitsPerSample);
             break;
+        default:;
         }
     }
 
@@ -715,14 +850,14 @@ static void VS_CC loadPlugin(const VSMap *in, VSMap *out, void *userData, VSCore
         const char *forceid = vsapi->propGetData(in, "forceid", 0, &err);
         if (!forceid)
             forceid = "";
-        core->loadPlugin(vsapi->propGetData(in, "path", 0, 0), forcens, forceid);
+        core->loadPlugin(vsapi->propGetData(in, "path", 0, nullptr), forcens, forceid);
     } catch (VSException &e) {
         vsapi->setError(out, e.what());
     }
 }
 
 void VS_CC loadPluginInitialize(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
-    registerFunc("LoadPlugin", "path:data;forcens:data:opt;forceid:data:opt;", &loadPlugin, NULL, plugin);
+    registerFunc("LoadPlugin", "path:data;forcens:data:opt;forceid:data:opt;", &loadPlugin, nullptr, plugin);
 }
 
 // not the most elegant way but avoids the mess that would happen if avscompat.h was included
@@ -880,6 +1015,7 @@ VSCore::VSCore(int threads) : coreFreed(false), numFilterInstances(1), formatIdO
     loadPluginInitialize(::configPlugin, ::registerFunction, p);
     cacheInitialize(::configPlugin, ::registerFunction, p);
     exprInitialize(::configPlugin, ::registerFunction, p);
+    genericInitialize(::configPlugin, ::registerFunction, p);
     lutInitialize(::configPlugin, ::registerFunction, p);
     mergeInitialize(::configPlugin, ::registerFunction, p);
     reorderInitialize(::configPlugin, ::registerFunction, p);
@@ -903,27 +1039,27 @@ VSCore::VSCore(int threads) : coreFreed(false), numFilterInstances(1), formatIdO
     const std::wstring filter = L"*.dll";
     // Autoload user specific plugins first so a user can always override
     std::vector<wchar_t> appDataBuffer(MAX_PATH + 1);
-    SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, appDataBuffer.data());
+    SHGetFolderPath(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appDataBuffer.data());
 
 #ifdef _WIN64
-#define ADDPEND_STR_6432(x) x##L"64"
+    std::wstring bits(L"64");
 #else
-#define ADDPEND_STR_6432(x) x##L"32"
+    std::wstring bits(L"32");
 #endif
 
-    std::wstring appDataPath = std::wstring(appDataBuffer.data()) + ADDPEND_STR_6432(L"\\VapourSynth\\plugins");
+    std::wstring appDataPath = std::wstring(appDataBuffer.data()) + L"\\VapourSynth\\plugins" + bits;
 
     // Autoload per user plugins
     loadAllPluginsInPath(appDataPath, filter);
 
     // Autoload bundled plugins
-    std::wstring corePluginPath = readRegistryValue(L"Software\\VapourSynth", ADDPEND_STR_6432(L"CorePlugins"));
+    std::wstring corePluginPath = readRegistryValue(L"Software\\VapourSynth", L"CorePlugins" + bits);
     if (!loadAllPluginsInPath(corePluginPath, filter))
         vsCritical("Core plugin autoloading failed. Installation is broken?");
 
     // Autoload global plugins last, this is so the bundled plugins cannot be overridden easily
     // and accidentally block updated bundled versions
-    std::wstring globalPluginPath = readRegistryValue(L"Software\\VapourSynth", ADDPEND_STR_6432(L"Plugins"));
+    std::wstring globalPluginPath = readRegistryValue(L"Software\\VapourSynth", L"Plugins" + bits);
     loadAllPluginsInPath(globalPluginPath, filter);
 #else
 
@@ -1003,9 +1139,10 @@ VSCore::~VSCore() {
 VSMap VSCore::getPlugins() {
     VSMap m;
     std::lock_guard<std::recursive_mutex> lock(pluginLock);
+    int num = 0;
     for (const auto &iter : plugins) {
         std::string b = iter.second->fnamespace + ";" + iter.second->id + ";" + iter.second->fullname;
-        vsapi.propSetData(&m, iter.second->id.c_str(), b.c_str(), static_cast<int>(b.size()), 0);
+        vsapi.propSetData(&m, ("Plugin" + std::to_string(++num)).c_str(), b.c_str(), static_cast<int>(b.size()), paReplace);
     }
     return m;
 }
@@ -1042,6 +1179,10 @@ void VSCore::loadPlugin(const std::string &filename, const std::string &forcedNa
         delete p;
         throw VSException(error);
     }
+
+    // Allow zimg, the greatest plugin on tv, to handle compat formats
+    if (p->id == "the.weather.channel")
+        p->enableCompat();
 
     plugins.insert(std::make_pair(p->id, p));
 }
@@ -1083,8 +1224,13 @@ VSPlugin::VSPlugin(const std::string &relFilename, const std::string &forcedName
 
     libHandle = LoadLibraryEx(wPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
 
-    if (!libHandle)
-        throw VSException("Failed to load " + relFilename);
+	if (!libHandle) {
+		DWORD lastError = GetLastError();
+
+		if (lastError == 87)
+			throw VSException("LoadLibraryEx failed with code 87: update windows and try again");
+		throw VSException("Failed to load " + relFilename + ". GetLastError() returned " + std::to_string(lastError) + ".");
+	}
 
     VSInitPlugin pluginInit = (VSInitPlugin)GetProcAddress(libHandle, "VapourSynthPluginInit");
 
@@ -1125,13 +1271,13 @@ VSPlugin::VSPlugin(const std::string &relFilename, const std::string &forcedName
 
 #ifdef VS_TARGET_CPU_X86
     if (!vs_isMMXStateOk())
-        vsFatal("Bad MMX state detected after loading %s", fullname.c_str());
+        vsFatal("Bad MMX state detected after loading %s", filename.c_str());
 #endif
 #ifdef VS_TARGET_OS_WINDOWS
     if (!vs_isFPUStateOk())
-        vsWarning("Bad FPU state detected after loading %s", fullname.c_str());
+        vsWarning("Bad FPU state detected after loading %s", filename.c_str());
     if (!vs_isSSEStateOk())
-        vsFatal("Bad SSE state detected after loading %s", fullname.c_str());
+        vsFatal("Bad SSE state detected after loading %s", filename.c_str());
 #endif
 
     if (readOnlySet)
@@ -1181,13 +1327,13 @@ void VSPlugin::configPlugin(const std::string &identifier, const std::string &de
 
 void VSPlugin::registerFunction(const std::string &name, const std::string &args, VSPublicFunction argsFunc, void *functionData) {
     if (readOnly)
-        vsFatal("Tried to modify read only namespace");
+        vsFatal("Plugin %s tried to modify read only namespace.", filename.c_str());
 
     if (!isValidIdentifier(name))
-        vsFatal("Illegal identifier specified for function");
+        vsFatal("Plugin %s tried to register '%s', an illegal identifier.", filename.c_str(), name.c_str());
 
     if (funcs.count(name))
-        vsFatal("Duplicate function registered");
+        vsFatal("Plugin %s tried to register '%s' more than once.", filename.c_str(), name.c_str());
 
     if (!readOnly) {
         std::lock_guard<std::mutex> lock(registerFunctionLock);
@@ -1250,7 +1396,7 @@ VSMap VSPlugin::invoke(const std::string &funcName, const VSMap &args) {
                 if (c != 'u') {
                     remainingArgs.erase(fa.name);
 
-                    if (lookup[(int)fa.type] != c)
+                    if (lookup[static_cast<int>(fa.type)] != c)
                         throw VSException(funcName + ": argument " + fa.name + " is not of the correct type");
 
                     if (!fa.arr && args[fa.name.c_str()].size() > 1)
@@ -1285,7 +1431,7 @@ VSMap VSPlugin::invoke(const std::string &funcName, const VSMap &args) {
         return v;
     }
 
-    vsapi.setError(&v, ("Function '" + funcName + "' not found in " + fullname).c_str());
+    vsapi.setError(&v, ("Function '" + funcName + "' not found in " + filename).c_str());
     return v;
 }
 
@@ -1293,8 +1439,7 @@ VSMap VSPlugin::getFunctions() {
     VSMap m;
     for (const auto & f : funcs) {
         std::string b = f.first + ";" + f.second.argString;
-        vsapi.propSetData(&m, f.first.c_str(), b.c_str(), static_cast<int>(b.size()), 0);
+        vsapi.propSetData(&m, f.first.c_str(), b.c_str(), static_cast<int>(b.size()), paReplace);
     }
     return m;
 }
-

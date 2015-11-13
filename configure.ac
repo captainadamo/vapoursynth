@@ -1,4 +1,4 @@
-AC_INIT([vapoursynth], [26], [https://github.com/vapoursynth/vapoursynth/issues], [vapoursynth], [http://www.vapoursynth.com/])
+AC_INIT([vapoursynth], [28], [https://github.com/vapoursynth/vapoursynth/issues], [vapoursynth], [http://www.vapoursynth.com/])
 
 : ${CFLAGS=""}
 : ${CXXFLAGS=""}
@@ -21,6 +21,16 @@ AS_IF(
       ],
       [
        AC_DEFINE([NDEBUG])
+      ]
+)
+
+
+
+AC_ARG_ENABLE([guard-pattern], AS_HELP_STRING([--enable-guard-pattern], [Adds 32 bytes on the left and the right sides of each frame, fills them with a certain value, and checks their integrity after each filter. It can be used to detect buggy filters that write a little outside the frame.]))
+AS_IF(
+      [test "x$enable_guard_pattern" = "xyes"],
+      [
+       AC_DEFINE([VS_FRAME_GUARD])
       ]
 )
 
@@ -82,6 +92,8 @@ AS_CASE(
          )
          AC_DEFINE([VS_TARGET_OS_WINDOWS])
          DEBUG_FORMAT="null"
+         AC_SUBST([UNICODECFLAGS], ["-DUNICODE -D_UNICODE"])
+         AC_SUBST([UNICODELDFLAGS], ["-municode"])
         ],
         [AC_MSG_ERROR([Unknown host OS])]
 )
@@ -352,18 +364,6 @@ AS_IF(
 
        saved_cppflags="$CPPFLAGS"
        CPPFLAGS="$IMAGEMAGICK_CFLAGS $CPPFLAGS"
-       AC_COMPILE_IFELSE(
-                         [AC_LANG_SOURCE(
-                                         [[
-#if defined(MAGICKCORE_HDRI_ENABLE) && MAGICKCORE_HDRI_ENABLE == 1
-#error imwri plugin requires ImageMagick without HDRI support.
-#endif
-                                         ]]
-                         )],
-                         [],
-                         [AC_MSG_ERROR([imwri plugin requires ImageMagick without HDRI support.])]
-       )
-
        AC_COMPILE_IFELSE(
                          [AC_LANG_SOURCE(
                                          [[

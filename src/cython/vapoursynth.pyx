@@ -1,4 +1,4 @@
-#  Copyright (c) 2012-2014 Fredrik Mellbin
+#  Copyright (c) 2012-2015 Fredrik Mellbin
 #
 #  This file is part of VapourSynth.
 #
@@ -38,7 +38,7 @@ _stored_output = {}
 _core = None
 _message_handler = None
 cdef const VSAPI *_vsapi = NULL
-cdef int _api_version = 0x30000
+cdef int _api_version = 0x30002
 
 GRAY  = vapoursynth.cmGray
 RGB   = vapoursynth.cmRGB
@@ -163,17 +163,19 @@ def get_output(int index = 0):
 cdef class FuncData(object):
     cdef object func
     cdef Core core
+    cdef int id
     
     def __init__(self):
         raise Error('Class cannot be instantiated directly')
         
     def __call__(self, **kwargs):
         return self.func(**kwargs)
-    
-cdef FuncData createFuncData(object func, Core core):
+
+cdef FuncData createFuncData(object func, Core core, int id):
     cdef FuncData instance = FuncData.__new__(FuncData)
     instance.func = func
     instance.core = core
+    instance.id = id
     return instance
     
 cdef class Func(object):
@@ -190,14 +192,16 @@ cdef class Func(object):
         cdef VSMap *outm
         cdef VSMap *inm
         cdef const VSAPI *vsapi
+        cdef const char *error
         vsapi = vpy_getVSApi();
         outm = self.funcs.createMap()
         inm = self.funcs.createMap()
         try:
             dictToMap(kwargs, inm, None, vsapi)
             self.funcs.callFunc(self.ref, inm, outm, NULL, NULL)
-            if self.funcs.getError(outm):
-                raise Error(self.funcs.getError(outm).decode('utf-8'))
+            error = self.funcs.getError(outm)
+            if error:
+                raise Error(error.decode('utf-8'))
             ret = mapToDict(outm, False, False, None, vsapi)
             if not isinstance(ret, dict):
                 ret = {'val':ret}
@@ -208,7 +212,13 @@ cdef class Func(object):
 cdef Func createFuncPython(object func, Core core):
     cdef Func instance = Func.__new__(Func)
     instance.funcs = core.funcs
-    fdata = createFuncData(func, core)
+    if _using_vsscript:
+        global _environment_id
+        if _environment_id is None:
+            raise Error('Internal environment id not set. Report this function wrapper creation error.')
+        fdata = createFuncData(func, core, _environment_id)
+    else:
+        fdata = createFuncData(func, core, 0)
     Py_INCREF(fdata)
     instance.ref = instance.funcs.createFunc(publicFunction, <void *>fdata, freeFunc, core.core, core.funcs)
     return instance
@@ -264,7 +274,7 @@ cdef FramePtr createFramePtr(const VSFrameRef *f, const VSAPI *funcs):
     instance.funcs = funcs
     return instance
 
-cdef void __stdcall frameDoneCallback(void *data, const VSFrameRef *f, int n, VSNodeRef *node, char *errormsg) nogil:
+cdef void __stdcall frameDoneCallback(void *data, const VSFrameRef *f, int n, VSNodeRef *node, const char *errormsg) nogil:
     cdef int pitch
     cdef const uint8_t *readptr
     cdef const VSFormat *fi
@@ -529,7 +539,7 @@ cdef class Format(object):
 cdef Format createFormat(const VSFormat *f):
     cdef Format instance = Format.__new__(Format)
     instance.id = f.id
-    instance.name = f.name.decode('utf-8')
+    instance.name = (<const char *>f.name).decode('utf-8')
     instance.color_family = f.colorFamily
     instance.sample_type = f.sampleType
     instance.bits_per_sample = f.bitsPerSample
@@ -860,9 +870,6 @@ cdef class VideoNode(object):
             
         cdef CallbackData d = CallbackData(fileobj, min(prefetch, self.num_frames), self.num_frames, self.format.num_planes, y4m, self, progress_update)
 
-        if d.total <= 0:
-            raise Error('Cannot output unknown length clip')
-
         # this is also an implicit test that the progress_update callback at least vaguely matches the requirements
         if (progress_update is not None):
             progress_update(0, d.total)
@@ -943,22 +950,9 @@ cdef class VideoNode(object):
         if isinstance(val, slice):
             if val.step is not None and val.step == 0:
                 raise ValueError('Slice step cannot be zero')
-            if val.step is not None and val.step < 0 and self.num_frames == 0:
-                raise ValueError('Negative step cannot be used with infinite/unknown length clips')
-            if ((val.start is not None and val.start < 0) or (val.stop is not None and val.stop < 0)) and self.num_frames == 0:
-                raise ValueError('Negative indices cannot be used with infinite/unknown length clips')
-            # this is just a big number that no one's likely to use, hence the -68
-            max_int = 2**31-68
-            if self.num_frames == 0:
-                indices = val.indices(max_int)
-            else:
-                indices = val.indices(self.num_frames)
 
-            if indices[0] == max_int:
-                indices[0] = None
-            if indices[1] == max_int:
-                indices[1] = None
-
+            indices = val.indices(self.num_frames)
+            
             step = indices[2]
 
             if step > 0:
@@ -990,9 +984,7 @@ cdef class VideoNode(object):
 
             return ret
         elif isinstance(val, int):
-            if val < 0 and self.num_frames == 0:
-                raise IndexError('Negative index cannot be used with infinite/unknown length clips')
-            elif val < 0:
+            if val < 0:
                 n = self.num_frames + val
             else:
                 n = val
@@ -1020,10 +1012,7 @@ cdef class VideoNode(object):
             s += '\tWidth: ' + str(self.width) + '\n'
             s += '\tHeight: ' + str(self.height) + '\n'
 
-        if not self.num_frames:
-            s += '\tNum Frames: unknown\n'
-        else:
-            s += '\tNum Frames: ' + str(self.num_frames) + '\n'
+        s += '\tNum Frames: ' + str(self.num_frames) + '\n'
 
         if not self.fps_num or not self.fps_den:
             s += '\tFPS Num: dynamic\n'
@@ -1174,7 +1163,7 @@ cdef class Core(object):
 
     def version(self):
         cdef const VSCoreInfo *v = self.funcs.getCoreInfo(self.core)
-        return v.versionString.decode('utf-8')
+        return (<const char *>v.versionString).decode('utf-8')
         
     def version_number(self):
         cdef const VSCoreInfo *v = self.funcs.getCoreInfo(self.core)
@@ -1408,8 +1397,13 @@ cdef void __stdcall freeFunc(void *pobj) nogil:
 
 cdef void __stdcall publicFunction(const VSMap *inm, VSMap *outm, void *userData, VSCore *core, const VSAPI *vsapi) nogil:
     with gil:
+        global _environment_id
+        global _environment_id_stack
+    
         d = <FuncData>userData
-
+        _environment_id_stack.append(_environment_id)
+        _environment_id = d.id
+   
         try:
             m = mapToDict(inm, False, False, d.core, vsapi)
             ret = d(**m)
@@ -1419,6 +1413,8 @@ cdef void __stdcall publicFunction(const VSMap *inm, VSMap *outm, void *userData
         except BaseException, e:
             emsg = str(e).encode('utf-8')
             vsapi.setError(outm, emsg)
+        finally:
+            _environment_id = _environment_id_stack.pop()
 
 # for whole script evaluation and export
 cdef public struct VPYScriptExport:
@@ -1484,7 +1480,7 @@ cdef public api int vpy_evaluateScript(VPYScriptExport *se, const char *script, 
                 Py_DECREF(errstr)
                 errstr = None
 
-            comp = compile(script.decode('utf-8'), fn, 'exec')
+            comp = compile(script.decode('utf-8-sig'), fn, 'exec')
             exec(comp) in evaldict
 
         except BaseException, e:

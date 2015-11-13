@@ -30,9 +30,6 @@
     <ClCompile Include="..\..\src\core\exprfilter.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\src\core\lutfilters.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\src\core\mergefilters.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -72,15 +69,18 @@
     <ClCompile Include="..\..\sdk\vsscript_example.c">
       <Filter>sdk</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\src\core\genericfilters.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\core\lutfilters.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <YASM Include="..\..\src\core\asm\x86\check.asm">
       <Filter>asm</Filter>
     </YASM>
     <YASM Include="..\..\src\core\asm\x86\cpu.asm">
-      <Filter>asm</Filter>
-    </YASM>
-    <YASM Include="..\..\src\core\asm\x86\expr.asm">
       <Filter>asm</Filter>
     </YASM>
     <YASM Include="..\..\src\core\asm\x86\merge.asm">
@@ -149,6 +149,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\src\avisynth\avisynth_wrapper.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\core\genericfilters.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\core\jitasm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

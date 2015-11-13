@@ -1,7 +1,7 @@
 warningflags = -Wall -Wextra -Wno-unused-parameter -Wno-unused-function
-commoncflags = -O3 $(warningflags) -I$(srcdir)/include $(DEBUGCFLAGS) $(MFLAGS)
+commoncflags = -O3 $(warningflags) -I$(srcdir)/include $(DEBUGCFLAGS) $(MFLAGS) $(UNICODECFLAGS)
 AM_CXXFLAGS = -std=c++11 $(commoncflags)
-AM_CFLAGS = $(commoncflags)
+AM_CFLAGS = -std=c99 $(commoncflags)
 
 
 
@@ -46,7 +46,10 @@ libvapoursynth_la_SOURCES = src/core/cachefilter.cpp \
 							src/core/exprfilter.cpp \
 							src/core/exprfilter.h \
 							src/core/filtershared.h \
-							src/core/lutfilters.c \
+							src/core/genericfilters.cpp \
+							src/core/genericfilters.h \
+							src/core/jitasm.h \
+							src/core/lutfilters.cpp \
 							src/core/lutfilters.h \
 							src/core/mergefilters.c \
 							src/core/mergefilters.h \
@@ -73,7 +76,6 @@ libvapoursynth_la_SOURCES = src/core/cachefilter.cpp \
 if X86ASM
 libvapoursynth_la_SOURCES += src/core/asm/x86/check.asm \
 							 src/core/asm/x86/cpu.asm \
-							 src/core/asm/x86/expr.asm \
 							 src/core/asm/x86/merge.asm \
 							 src/core/asm/x86/transpose.asm
 endif # X86ASM
@@ -124,6 +126,7 @@ bin_PROGRAMS = vspipe
 
 vspipe_SOURCES = src/vspipe/vspipe.cpp
 vspipe_LDADD = libvapoursynth-script.la
+vspipe_LDFLAGS = $(UNICODELDFLAGS)
 endif # VSPIPE
 endif # VSSCRIPT
 

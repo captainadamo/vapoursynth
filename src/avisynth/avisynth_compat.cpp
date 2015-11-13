@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2012-2013 Fredrik Mellbin
+* Copyright (c) 2012-2015 Fredrik Mellbin
 *
 * This file is part of VapourSynth.
 *
@@ -28,7 +28,7 @@
 namespace AvisynthCompat {
 
 const VSFrameRef *FakeAvisynth::avsToVSFrame(VideoFrame *frame) {
-    const VSFrameRef *ref = NULL;
+    const VSFrameRef *ref = nullptr;
     std::map<VideoFrame *, const VSFrameRef *>::iterator it = ownedFrames.find(frame);
 
     if (it != ownedFrames.end()) {
@@ -103,10 +103,10 @@ char *FakeAvisynth::VSprintf(const char *fmt, void *val) {
 
     while (count == -1) {
         buf.resize(buf.size() + 4096);
-        count = vsnprintf(&buf[0], size - 1, fmt, (va_list)val);
+        count = vsnprintf(buf.data(), size - 1, fmt, (va_list)val);
     }
 
-    char *i = SaveString(&buf[0]);
+    char *i = SaveString(buf.data());
     return i;
 }
 
@@ -142,7 +142,7 @@ PVideoFrame VSClip::GetFrame(int n, IScriptEnvironment *env) {
     n = std::min(std::max(0, n), vi.num_frames - 1);
 
     if (fakeEnv->initializing)
-        ref = vsapi->getFrame(n, clip, 0, 0);
+        ref = vsapi->getFrame(n, clip, nullptr, 0);
     else
         ref = vsapi->getFrameFilter(n, clip, fakeEnv->uglyCtx);
 
@@ -154,11 +154,11 @@ PVideoFrame VSClip::GetFrame(int n, IScriptEnvironment *env) {
             std::string s = std::string("Avisynth Compat: requested frame ") + std::to_string(n) + std::string(" not prefetched, using slow method");
             vsWarning("%s", s.c_str());
         }
-        ref = vsapi->getFrame(n, clip, &buf[0], buf.size());
+        ref = vsapi->getFrame(n, clip, buf.data(), buf.size());
     }
 
     if (!ref)
-        vsFatal("Avisynth Compat: error while getting input frame synchronously: %s", &buf[0]);
+        vsFatal("Avisynth Compat: error while getting input frame synchronously: %s", buf.data());
 
     bool isYV12 = vi.IsYV12();
 
@@ -331,6 +331,14 @@ static PrefetchInfo getPrefetchInfo(const std::string &name, const VSMap *in, co
     PREFETCHR1(MFlowBlur)
     PREFETCHR1(MRecalculate)
 
+    // aWarpShit
+    PREFETCHR0(aBlur)
+    PREFETCHR0(aSobel)
+    PREFETCHR0(aWarp)
+    PREFETCHR0(aWarp4)
+    PREFETCHR0(aWarpSharp)
+    PREFETCHR0(aWarpSharp2)
+
     // Avisynth internal
     PREFETCH(Bob, 2, 1, 0, 0)
     PREFETCH(TemporalSoften, 1, 1, -5, 5)
@@ -352,6 +360,7 @@ static void VS_CC avisynthFilterInit(VSMap *in, VSMap *out, void **instanceData,
     vi.numFrames = viAvs.num_frames;
     vi.fpsNum = viAvs.fps_numerator;
     vi.fpsDen = viAvs.fps_denominator;
+    vs_normalizeRational(&vi.fpsNum, &vi.fpsDen);
 
     if (viAvs.IsYV12())
         vi.format = vsapi->getFormatPreset(pfYUV420P8, core);
@@ -392,24 +401,24 @@ static const VSFrameRef *VS_CC avisynthFilterGetFrame(int n, int activationReaso
             vsFatal("Avisynth Error: avisynth errors are unrecoverable, crashing...");
         }
 
-        clip->fakeEnv->uglyCtx = NULL;
+        clip->fakeEnv->uglyCtx = nullptr;
     } else if (activationReason == arInitial) {
         for (VSNodeRef *c : clip->preFetchClips)
             prefetchHelper(n, c, clip->prefetchInfo, frameCtx, vsapi);
     } else if (activationReason == arError) {
-        return NULL;
+        return nullptr;
     }
 
     // Enjoy the casting to trigger the void * operator. Please contact me if you can make it pretty.
 
-    const VSFrameRef *ref = NULL;
+    const VSFrameRef *ref = nullptr;
 
     if (frame) {
         ref = clip->fakeEnv->avsToVSFrame((VideoFrame *)((void *)frame));
         VSFrameRef *ref2 = vsapi->copyFrame(ref, core);
         vsapi->freeFrame(ref);
-        vsapi->propSetInt(vsapi->getFramePropsRW(ref2), "MVToolsHackNumAudioSamples", clip->magicalNumAudioSamplesForMVTools, 0);
-        vsapi->propSetInt(vsapi->getFramePropsRW(ref2), "MVToolsHackNChannels", clip->magicalNChannelsForMVTools, 0);
+        vsapi->propSetInt(vsapi->getFramePropsRW(ref2), "MVToolsHackNumAudioSamples", clip->magicalNumAudioSamplesForMVTools, paReplace);
+        vsapi->propSetInt(vsapi->getFramePropsRW(ref2), "MVToolsHackNChannels", clip->magicalNChannelsForMVTools, paReplace);
         ref = ref2;
     }
 
@@ -434,19 +443,19 @@ static void VS_CC fakeAvisynthFunctionWrapper(const VSMap *in, VSMap *out, void 
         if (vsapi->propNumElements(in, parsedArg.name.data()) > 0) {
             switch (parsedArg.type) {
             case 'i':
-                inArgs[i] = int64ToIntS(vsapi->propGetInt(in, parsedArg.name.c_str(), 0, NULL));
+                inArgs[i] = int64ToIntS(vsapi->propGetInt(in, parsedArg.name.c_str(), 0, nullptr));
                 break;
             case 'f':
-                inArgs[i] = vsapi->propGetFloat(in, parsedArg.name.c_str(), 0, NULL);
+                inArgs[i] = vsapi->propGetFloat(in, parsedArg.name.c_str(), 0, nullptr);
                 break;
             case 'b':
-                inArgs[i] = !!vsapi->propGetInt(in, parsedArg.name.c_str(), 0, NULL);
+                inArgs[i] = !!vsapi->propGetInt(in, parsedArg.name.c_str(), 0, nullptr);
                 break;
             case 's':
-                inArgs[i] = vsapi->propGetData(in, parsedArg.name.c_str(), 0, NULL);
+                inArgs[i] = vsapi->propGetData(in, parsedArg.name.c_str(), 0, nullptr);
                 break;
             case 'c':
-                VSNodeRef *cr = vsapi->propGetNode(in, parsedArg.name.c_str(), 0, NULL);
+                VSNodeRef *cr = vsapi->propGetNode(in, parsedArg.name.c_str(), 0, nullptr);
                 const VSVideoInfo *vi = vsapi->getVideoInfo(cr);
                 if (!isConstantFormat(vi) || vi->numFrames == 0 || (vi->format->id != pfYUV420P8 && vi->format->id != pfCompatYUY2 && vi->format->id != pfCompatBGR32)) {
                     vsapi->setError(out, "Invalid avisynth colorspace in one of the input clips");
@@ -455,7 +464,7 @@ static void VS_CC fakeAvisynthFunctionWrapper(const VSMap *in, VSMap *out, void 
                     return;
                 }
 
-                const VSFrameRef *fr = vsapi->getFrame(0, cr, 0, 0);
+                const VSFrameRef *fr = vsapi->getFrame(0, cr, nullptr, 0);
                 int err;
                 int64_t numAudioSamples = vsapi->propGetInt(vsapi->getFramePropsRO(fr), "MVToolsHackNumAudioSamples", 0, &err);
                 int nChannels = int64ToIntS(vsapi->propGetInt(vsapi->getFramePropsRO(fr), "MVToolsHackNChannels", 0, &err));
@@ -495,13 +504,13 @@ static void VS_CC fakeAvisynthFunctionWrapper(const VSMap *in, VSMap *out, void 
                                     filterData,
                                     core);
     } else if (ret.IsBool()) {
-        vsapi->propSetInt(out, "val", ret.AsBool() ? 1 : 0, 0);
+        vsapi->propSetInt(out, "val", ret.AsBool() ? 1 : 0, paReplace);
     } else if (ret.IsInt()) {
-        vsapi->propSetInt(out, "val", ret.AsInt(), 0);
+        vsapi->propSetInt(out, "val", ret.AsInt(), paReplace);
     } else if (ret.IsFloat()) {
-        vsapi->propSetFloat(out, "val", ret.AsFloat(), 0);
+        vsapi->propSetFloat(out, "val", ret.AsFloat(), paReplace);
     } else if (ret.IsString()) {
-        vsapi->propSetData(out, "val", ret.AsString(), -1, 0);
+        vsapi->propSetData(out, "val", ret.AsString(), -1, paReplace);
     }
 }
 
@@ -592,12 +601,12 @@ void FakeAvisynth::PopContext() {
 }
 
 PVideoFrame FakeAvisynth::NewVideoFrame(const VideoInfo &vi, int align) {
-    VSFrameRef *ref = NULL;
+    VSFrameRef *ref = nullptr;
     assert(vi.width > 0);
     assert(vi.height > 0);
 
     // attempt to copy over the right set of properties, assuming that frame n in is also n out
-    const VSFrameRef *propSrc = NULL;
+    const VSFrameRef *propSrc = nullptr;
 
     if (uglyNode && uglyCtx)
         propSrc = vsapi->getFrameFilter(uglyN, uglyNode, uglyCtx);
@@ -713,7 +722,7 @@ int FakeAvisynth::SetWorkingDir(const char *newdir) {
 
 void *FakeAvisynth::ManageCache(int key, void *data) {
     vsFatal("ManageCache not implemented");
-    return NULL;
+    return nullptr;
 }
 
 bool FakeAvisynth::PlanarChromaAlignment(PlanarChromaAlignmentMode key) {
@@ -746,7 +755,7 @@ PVideoFrame FakeAvisynth::SubframePlanar(PVideoFrame src, int rel_offset, int ne
 
 static void VS_CC avsLoadPlugin(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
     FakeAvisynth *avs = new FakeAvisynth(core, vsapi);
-    const char *rawPath = vsapi->propGetData(in, "path", 0, NULL);
+    const char *rawPath = vsapi->propGetData(in, "path", 0, nullptr);
     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> conversion;
     std::wstring wPath = conversion.from_bytes(rawPath);
 

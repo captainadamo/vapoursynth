@@ -267,7 +267,7 @@ public:
 
 class OpRG05 : public LineProcAll {
 public:
-    typedef	ConvSigned	ConvSign;
+    typedef ConvSigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             AvsFilterRemoveGrain16_SORT_AXIS_CPP
@@ -335,7 +335,7 @@ public:
 
 class OpRG06 : public LineProcAll {
 public:
-    typedef	ConvSigned	ConvSign;
+    typedef ConvSigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             AvsFilterRemoveGrain16_SORT_AXIS_CPP
@@ -421,7 +421,7 @@ public:
 
 class OpRG07 : public LineProcAll {
 public:
-    typedef	ConvSigned	ConvSign;
+    typedef ConvSigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             AvsFilterRemoveGrain16_SORT_AXIS_CPP
@@ -507,7 +507,7 @@ public:
 
 class OpRG08 : public LineProcAll {
 public:
-    typedef	ConvSigned	ConvSign;
+    typedef ConvSigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             AvsFilterRemoveGrain16_SORT_AXIS_CPP
@@ -592,7 +592,7 @@ public:
 };
 class OpRG09 : public LineProcAll {
 public:
-    typedef	ConvSigned	ConvSign;
+    typedef ConvSigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             AvsFilterRemoveGrain16_SORT_AXIS_CPP
@@ -651,7 +651,7 @@ public:
 };
 class OpRG10 : public LineProcAll {
 public:
-    typedef	ConvUnsigned	ConvSign;
+    typedef ConvUnsigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             const int      d1 = std::abs(c - a1);
@@ -834,7 +834,7 @@ class OpRG15 : public OpRG1516, public LineProcEven {};
 class OpRG16 : public OpRG1516, public LineProcOdd {};
 class OpRG17 : public LineProcAll {
 public:
-    typedef	ConvSigned	ConvSign;
+    typedef ConvSigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             AvsFilterRemoveGrain16_SORT_AXIS_CPP
@@ -868,7 +868,7 @@ public:
 
 class OpRG18 : public LineProcAll {
 public:
-    typedef	ConvUnsigned	ConvSign;
+    typedef ConvUnsigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             const int      d1 = std::max(std::abs(c - a1), std::abs(c - a8));
@@ -971,6 +971,8 @@ public:
     static __forceinline __m128i rg (const T *src_ptr, int stride_src, __m128i mask_sign) {
         AvsFilterRemoveGrain16_READ_PIX
 
+        (void)c;
+
         const __m128i    bias =
             _mm_load_si128 (reinterpret_cast <const __m128i *> (_bias));
 
@@ -1042,7 +1044,7 @@ private:
 
 class OpRG21 : public LineProcAll {
 public:
-    typedef	ConvUnsigned	ConvSign;
+    typedef ConvUnsigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             const int      l1l = (a1 + a8) >> 1;
@@ -1110,7 +1112,7 @@ private:
 
 class OpRG22 : public LineProcAll {
 public:
-    typedef	ConvUnsigned	ConvSign;
+    typedef ConvUnsigned ConvSign;
     static __forceinline int
         rg(int c, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
             const int      l1 = (a1 + a8 + 1) >> 1;
@@ -1245,7 +1247,7 @@ ALIGNED_ARRAY(const int32_t OpRG20::_bias[4], 16) =
 { -0x8000 * 9 + 4, -0x8000 * 9 + 4, -0x8000 * 9 + 4, -0x8000 * 9 + 4};
 
 ALIGNED_ARRAY(const uint16_t OpRG20::_mult[8], 16) =
-{ 7282, 7282, 7282, 7282, 7282, 7282, 7282, 7282 };	// (1^16 + 4) / 9
+{ 7282, 7282, 7282, 7282, 7282, 7282, 7282, 7282 }; // (1^16 + 4) / 9
 
 ALIGNED_ARRAY(const uint16_t OpRG21::_bit0[8], 16) =
 { 0x0001, 0x0001, 0x0001, 0x0001, 0x0001, 0x0001, 0x0001, 0x0001 };
@@ -1268,7 +1270,7 @@ static void process_subplane_cpp (const T *src_ptr, int stride_src, T *dst_ptr, 
     for (int y = y_b; y < y_e; ++y)
     {
         if (OP::skip_line(y)) {
-            memcpy(dst_ptr, src_ptr, stride_dst);
+            memcpy(dst_ptr, src_ptr, width * sizeof(T));
         } else {
 
             dst_ptr[0] = src_ptr[0];
@@ -1335,7 +1337,7 @@ static void process_subplane_sse2 (const T *src_ptr, int stride_src, T *dst_ptr,
     {
 
         if (OP::skip_line(y)) {
-            memcpy(dst_ptr, src_ptr, stride_dst);
+            memcpy(dst_ptr, src_ptr, width * sizeof(T));
         } else {
             dst_ptr[0] = src_ptr[0];
 
@@ -1402,14 +1404,14 @@ static void do_process_plane_cpp (const VSFrameRef *src_frame, VSFrameRef *dst_f
     const T1*        src_ptr       = reinterpret_cast<const T1*>(vsapi->getReadPtr(src_frame, plane_id));
 
     // First line
-    memcpy (dst_ptr, src_ptr, stride);
+    memcpy(dst_ptr, src_ptr, w * sizeof(T1));
 
     // Main content
     PlaneProc<OP1, T1>::process_subplane_cpp(src_ptr, stride/sizeof(T1), dst_ptr, stride/sizeof(T1), w, h);
 
     // Last line
     const int        lp = (h - 1) * stride/sizeof(T1);
-    memcpy (dst_ptr + lp, src_ptr + lp, stride);
+    memcpy(dst_ptr + lp, src_ptr + lp, w * sizeof(T1));
 }
 
 };
@@ -1421,19 +1423,19 @@ typedef struct {
 } RemoveGrainData;
 
 static void VS_CC removeGrainInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    RemoveGrainData *d = (RemoveGrainData *) * instanceData;
+    RemoveGrainData *d = static_cast<RemoveGrainData *>(*instanceData);
     vsapi->setVideoInfo(d->vi, 1, node);
 }
 
 static const VSFrameRef *VS_CC removeGrainGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    RemoveGrainData *d = (RemoveGrainData *) * instanceData;
+    RemoveGrainData *d = static_cast<RemoveGrainData *>(*instanceData);
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->node, frameCtx);
     } else if (activationReason == arAllFramesReady) {
         const VSFrameRef *src_frame = vsapi->getFrameFilter(n, d->node, frameCtx);
         int planes[3] = {0, 1, 2};
-        const VSFrameRef * cp_planes[3] = { d->mode[0] ? NULL : src_frame, d->mode[1] ? NULL : src_frame, d->mode[2] ? NULL : src_frame };
+        const VSFrameRef * cp_planes[3] = { d->mode[0] ? nullptr : src_frame, d->mode[1] ? nullptr : src_frame, d->mode[2] ? nullptr : src_frame };
         VSFrameRef *dst_frame = vsapi->newVideoFrame2(vsapi->getFrameFormat(src_frame), vsapi->getFrameWidth(src_frame, 0), vsapi->getFrameHeight(src_frame, 0), cp_planes, planes, src_frame, core);
 
 
@@ -1517,11 +1519,11 @@ static const VSFrameRef *VS_CC removeGrainGetFrame(int n, int activationReason, 
         return dst_frame;
     }
 
-    return 0;
+    return nullptr;
 }
 
 static void VS_CC removeGrainFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
-    RemoveGrainData *d = (RemoveGrainData *)instanceData;
+    RemoveGrainData *d = static_cast<RemoveGrainData *>(instanceData);
     vsapi->freeNode(d->node);
     delete d;
 }
@@ -1529,7 +1531,7 @@ static void VS_CC removeGrainFree(void *instanceData, VSCore *core, const VSAPI 
 void VS_CC removeGrainCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
     RemoveGrainData d;
 
-    d.node = vsapi->propGetNode(in, "clip", 0, 0);
+    d.node = vsapi->propGetNode(in, "clip", 0, nullptr);
     d.vi = vsapi->getVideoInfo(d.node);
 
     if (!d.vi->format) {
@@ -1554,7 +1556,7 @@ void VS_CC removeGrainCreate(const VSMap *in, VSMap *out, void *userData, VSCore
 
     for (int i = 0; i < 3; i++) {
         if (i < m) {
-            d.mode[i] = int64ToIntS(vsapi->propGetInt(in, "mode", i, NULL));
+            d.mode[i] = int64ToIntS(vsapi->propGetInt(in, "mode", i, nullptr));
             if (d.mode[i] < 0 || d.mode[i] > 24)
             {
                 vsapi->freeNode(d.node);
@@ -1566,9 +1568,7 @@ void VS_CC removeGrainCreate(const VSMap *in, VSMap *out, void *userData, VSCore
         }
     }
 
-    RemoveGrainData *data = new RemoveGrainData;
-    *data = d;
+    RemoveGrainData *data = new RemoveGrainData(d);
 
     vsapi->createFilter(in, out, "RemoveGrain", removeGrainInit, removeGrainGetFrame, removeGrainFree, fmParallel, 0, data, core);
 }
-

@@ -1,3 +1,5 @@
+.. _pythonreference:
+
 Python Reference
 ================
 
@@ -19,15 +21,16 @@ are CamelCase. Unit names are also lowercase and usually short. This is good to
 remember. If you do not like CamelCase for function names you can pass
 *accept_lowercase=True* to get_core().
 
-Slicing
-#######
+Slicing and Other Syntactic Sugar
+#################################
 
 The VideoNode class (always called "clip" in practice) supports the full
 range of indexing and slicing operations in Python. If you do perform a slicing
 operation on a clip, you will get a new clip back with the desired frames.
 Here are some examples to illustrate::
 
-   # ret will be a one frame clip containing the 6th frame
+   # ret will be a one frame clip containing frame number 5
+   # note that frame numbers, like python arrays, start counting at 0
    ret = clip[5]
    # ret will contain frames 6 to 9 (unlike Trim, the end value of python slicing is not inclusive)
    ret = clip[6:10]
@@ -42,6 +45,44 @@ Here are some examples to illustrate::
 
    # It may all be combined at once to confuse people, just like normal Python lists
    ret = clip[-400:-800:-5]
+
+Filters can be chained with a dot, like in Avisynth::
+
+   clip = core.ffms2.Source("asdf.mov")
+   clip = clip.std.Trim(first=100, last=2000).std.FlipVertical()
+
+The addition operator can be used to splice clips together::
+
+   clip4 = clip1 + clip2 + clip3
+
+   # Equivalent to:
+   clip4 = core.std.Splice([core.std.Splice([clip1, clip2], mismatch=False), clip3], mismatch=False)
+
+The multiplication operator can be used to loop a clip::
+
+   clip = clip * 42
+
+   # Equivalent to:
+   clip = core.std.Loop(clip, times=42)
+   
+Note that multiplication by 0 is a special case that will repeat the clip up to the maximum frame count.
+
+Python Keywords as Filter Arguments
+###################################
+
+If a filter's argument happens to be a Python keyword, you may prepend
+an underscore to the argument's name when invoking the filter. The Python
+module will strip one leading underscore from all filter arguments before
+passing them to the filters.
+
+::
+
+   clip = core.plugin.Filter(clip, _lambda=1)
+
+Another way to deal with such arguments is to place them in a dictionary::
+
+   args = { "lambda": 1 }
+   clip = core.plugin.Filter(clip, **args)
 
 Output
 ######
@@ -176,8 +217,7 @@ Classes and Functions
 
    .. py:attribute:: num_frames
 
-      The number of frames in the clip. This value will be 0 if the total number
-      of frames is unknown or infinite.
+      The number of frames in the clip.
 
    .. py:attribute:: fps_num
 

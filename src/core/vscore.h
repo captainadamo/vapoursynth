@@ -23,11 +23,11 @@
 
 #include "VapourSynth.h"
 #include "vslog.h"
-#include <stdlib.h>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
-#include <string.h>
-#include <assert.h>
+#include <cstring>
+#include <cassert>
 #include <vector>
 #include <list>
 #include <set>
@@ -37,12 +37,21 @@
 #include <mutex>
 #include <thread>
 #include <condition_variable>
+#include <random>
+#include <algorithm>
 #ifdef VS_TARGET_OS_WINDOWS
 #    define WIN32_LEAN_AND_MEAN
-#    define NOMINMAX
-#    include <Windows.h>
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <windows.h>
+#    define VS_FRAME_POOL
 #else
 #    include <dlfcn.h>
+#endif
+
+#ifdef VS_FRAME_GUARD
+static const uint32_t VS_FRAME_GUARD_PATTERN = 0xDEADBEEF;
 #endif
 
 class VSFrame;
@@ -129,7 +138,7 @@ public:
     void append(const PExtFunction &val);
 
     template<typename T>
-    const T &getValue(int index) const {
+    const T &getValue(size_t index) const {
         return reinterpret_cast<std::vector<T>*>(storage)->at(index);
     }
 
@@ -290,48 +299,34 @@ public:
 
 class MemoryUse {
 private:
-    std::atomic<unsigned> usedKiloBytes;
+    std::atomic<size_t> used;
+    size_t maxMemoryUse;
     bool freeOnZero;
-    int64_t maxMemoryUse;
+    std::multimap<size_t, uint8_t *> buffers;
+    size_t unusedBufferSize;
+    std::minstd_rand generator;
+    std::mutex mutex;
 public:
-    void add(unsigned bytes) {
-        usedKiloBytes.fetch_add((bytes + 1023) / 1024);
-    }
-    void subtract(unsigned bytes) {
-        usedKiloBytes.fetch_sub((bytes + 1023) / 1024);
-    }
-    int64_t memoryUse() {
-        int64_t temp = usedKiloBytes;
-        return temp * 1024;
-    }
-    int64_t getLimit() {
-        return maxMemoryUse;
-    }
-    int64_t setMaxMemoryUse(int64_t bytes) {
-        if (bytes > 0)
-            maxMemoryUse = bytes;
-        return maxMemoryUse;
-    }
-    bool isOverLimit() {
-        return memoryUse() > maxMemoryUse;
-    }
-    void signalFree() {
-        freeOnZero = true;
-        if (!usedKiloBytes)
-            delete this;
-    }
-    MemoryUse() : usedKiloBytes(0), freeOnZero(false) {
-        maxMemoryUse = 1024*1024*1024;
-    }
+    void add(size_t bytes);
+    void subtract(size_t bytes);
+    uint8_t *allocBuffer(size_t bytes);
+    void freeBuffer(uint8_t *buf);
+    size_t memoryUse();
+    size_t getLimit();
+    int64_t setMaxMemoryUse(int64_t bytes);
+    bool isOverLimit();
+    void signalFree();
+    MemoryUse();
+    ~MemoryUse();
 };
 
 class VSPlaneData {
 private:
-    MemoryUse *mem;
-    uint32_t size;
+    MemoryUse &mem;
 public:
     uint8_t *data;
-    VSPlaneData(uint32_t size, MemoryUse *mem);
+    const size_t size;
+    VSPlaneData(size_t dataSize, MemoryUse &mem);
     VSPlaneData(const VSPlaneData &d);
     ~VSPlaneData();
 };
@@ -348,6 +343,11 @@ private:
     VSMap properties;
 public:
     static const int alignment = 32;
+#ifdef VS_FRAME_GUARD
+    static const int guardSpace = alignment;
+#else
+    static const int guardSpace = 0;
+#endif
 
     VSFrame(const VSFormat *f, int width, int height, const VSFrame *propSrc, VSCore *core);
     VSFrame(const VSFormat *f, int width, int height, const VSFrame * const *planeSrc, const int *plane, const VSFrame *propSrc, VSCore *core);
@@ -374,15 +374,19 @@ public:
     int getStride(int plane) const;
     const uint8_t *getReadPtr(int plane) const;
     uint8_t *getWritePtr(int plane);
+
+#ifdef VS_FRAME_GUARD
+    bool verifyGuardPattern();
+#endif
 };
 
 class FrameContext {
     friend class VSThreadPool;
     friend void runTasks(VSThreadPool *owner, volatile bool &stop);
 private:
-    int numFrameRequests;
+    uintptr_t reqOrder;
+    unsigned numFrameRequests;
     int n;
-    VSNodeRef *node;
     VSNode *clip;
     PVideoFrame returnedFrame;
     PFrameContext upstreamContext;
@@ -392,6 +396,7 @@ private:
     std::string errorMessage;
     bool error;
 public:
+    VSNodeRef *node;
     std::map<NodeOutputKey, PVideoFrame> availableFrames;
     int lastCompletedN;
     int index;
@@ -485,6 +490,7 @@ private:
     std::condition_variable newWork;
     std::atomic<unsigned> activeThreads;
     std::atomic<unsigned> idleThreads;
+    std::atomic<uintptr_t> reqCounter;
     unsigned maxThreads;
     std::atomic<bool> stopThreads;
     std::atomic<unsigned> ticks;
@@ -493,6 +499,7 @@ private:
     void startInternal(const PFrameContext &context);
     void spawnThread();
     static void runTasks(VSThreadPool *owner, std::atomic<bool> &stop);
+    static bool taskCmp(const PFrameContext &a, const PFrameContext &b);
 public:
     VSThreadPool(VSCore *core, int threads);
     ~VSThreadPool();
@@ -593,7 +600,7 @@ public:
     void copyFrameProps(const PVideoFrame &src, PVideoFrame &dst);
 
     const VSFormat *getFormatPreset(int id);
-    const VSFormat *registerFormat(VSColorFamily colorFamily, VSSampleType sampleType, int bitsPerSample, int subSamplingW, int subSamplingH, const char *name = NULL, int id = pfNone);
+    const VSFormat *registerFormat(VSColorFamily colorFamily, VSSampleType sampleType, int bitsPerSample, int subSamplingW, int subSamplingH, const char *name = nullptr, int id = pfNone);
     bool isValidFormatPointer(const VSFormat *f);
 
     void loadPlugin(const std::string &filename, const std::string &forcedNamespace = std::string(), const std::string &forcedId = std::string());

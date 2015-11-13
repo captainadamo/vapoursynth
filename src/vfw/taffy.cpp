@@ -9,13 +9,13 @@ static void pack_4444(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const T **srcp = (const T **)args->srcp;
-    T *dstp = (T *)args->dstp[0];
+    const T **srcp = reinterpret_cast<const T **>(args->srcp);
+    T *dstp = static_cast<T *>(args->dstp[0]);
 
     int *src_stride = args->src_stride;
     int dst_stride = args->dst_stride[0];
 
-    if (srcp[0] == NULL) {
+    if (srcp[0] == nullptr) {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 dstp[x * 4 + 0] = 0;
@@ -30,7 +30,7 @@ static void pack_4444(taffy_param *args) {
 
             dstp += dst_stride / sizeof(T);
         }
-    } else if (srcp[3] == NULL) {
+    } else if (srcp[3] == nullptr) {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 dstp[x * 4 + 0] = srcp[0][x];
@@ -70,13 +70,13 @@ static void unpack_4444(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const T *srcp = (const T *)args->srcp[0];
-    T **dstp = (T **)args->dstp;
+    const T *srcp = static_cast<const T *>(args->srcp[0]);
+    T **dstp = reinterpret_cast<T **>(args->dstp);
 
     int src_stride = args->src_stride[0];
     int *dst_stride = args->dst_stride;
 
-    if (dstp[0] == NULL) {
+    if (dstp[0] == nullptr) {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 dstp[1][x] = srcp[x * 4 + 1];
@@ -90,7 +90,7 @@ static void unpack_4444(taffy_param *args) {
             dstp[2] += dst_stride[2] / sizeof(T);
             dstp[3] += dst_stride[3] / sizeof(T);
         }
-    } else if (dstp[3] == NULL) {
+    } else if (dstp[3] == nullptr) {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 dstp[0][x] = srcp[x * 4 + 0];
@@ -130,8 +130,8 @@ static void pack_444(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const T **srcp = (const T **)args->srcp;
-    T *dstp = (T *)args->dstp[0];
+    const T **srcp = reinterpret_cast<const T **>(args->srcp);
+    T *dstp = static_cast<T *>(args->dstp[0]);
 
     int *src_stride = args->src_stride;
     int dst_stride = args->dst_stride[0];
@@ -157,8 +157,8 @@ static void unpack_444(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const T *srcp = (const T *)args->srcp[0];
-    T **dstp = (T **)args->dstp;
+    const T *srcp = static_cast<const T *>(args->srcp[0]);
+    T **dstp = reinterpret_cast<T **>(args->dstp);
 
     int src_stride = args->src_stride[0];
     int *dst_stride = args->dst_stride;
@@ -185,8 +185,8 @@ static void pack_422(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const T **srcp = (const T **)args->srcp;
-    T *dstp = (T *)args->dstp[0];
+    const T **srcp = reinterpret_cast<const T **>(args->srcp);
+    T *dstp = static_cast<T *>(args->dstp[0]);
 
     int *src_stride = args->src_stride;
     int dst_stride = args->dst_stride[0];
@@ -213,8 +213,8 @@ static void unpack_422(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const T *srcp = (const T *)args->srcp[0];
-    T **dstp = (T **)args->dstp;
+    const T *srcp = static_cast<const T *>(args->srcp[0]);
+    T **dstp = reinterpret_cast<T **>(args->dstp);
 
     int src_stride = args->src_stride[0];
     int *dst_stride = args->dst_stride;
@@ -242,8 +242,8 @@ static void pack_422_uyvy(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const T **srcp = (const T **)args->srcp;
-    T *dstp = (T *)args->dstp[0];
+    const T **srcp = reinterpret_cast<const T **>(args->srcp);
+    T *dstp = static_cast<T *>(args->dstp[0]);
 
     int *src_stride = args->src_stride;
     int dst_stride = args->dst_stride[0];
@@ -270,8 +270,8 @@ static void unpack_422_uyvy(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const T *srcp = (const T *)args->srcp[0];
-    T **dstp = (T **)args->dstp;
+    const T *srcp = static_cast<const T *>(args->srcp[0]);
+    T **dstp = reinterpret_cast<T **>(args->dstp);
 
     int src_stride = args->src_stride[0];
     int *dst_stride = args->dst_stride;
@@ -300,8 +300,8 @@ static void pack_nvish(taffy_param *args) {
     int *width = args->width;
     int *height = args->height;
 
-    const T **srcp = (const T **)args->srcp;
-    T **dstp = (T **)args->dstp;
+    const T **srcp = reinterpret_cast<const T **>(args->srcp);
+    T **dstp = reinterpret_cast<T **>(args->dstp);
 
     int *src_stride = args->src_stride;
     int *dst_stride = args->dst_stride;
@@ -347,8 +347,8 @@ static void unpack_nvish(taffy_param *args) {
     int *width = args->width;
     int *height = args->height;
 
-    const T **srcp = (const T **)args->srcp;
-    T **dstp = (T **)args->dstp;
+    const T **srcp = reinterpret_cast<const T **>(args->srcp);
+    T **dstp = reinterpret_cast<T **>(args->dstp);
 
     int *src_stride = args->src_stride;
     int *dst_stride = args->dst_stride;
@@ -420,8 +420,8 @@ TAFFY_API(void) taffy_pack_v210(taffy_param *args) {
     int width = args->width[0];
     int height = args->height[0];
 
-    const uint16_t **srcp = (const uint16_t **)args->srcp;
-    uint32_t *dstp = (uint32_t *)args->dstp[0];
+    const uint16_t **srcp = reinterpret_cast<const uint16_t **>(args->srcp);
+    uint32_t *dstp = static_cast<uint32_t *>(args->dstp[0]);
 
     int *src_stride = args->src_stride;
     int dst_stride = args->dst_stride[0];
@@ -456,8 +456,8 @@ TAFFY_API(void) taffy_unpack_v210(taffy_param *args) {
     int src_stride = args->src_stride[0];
     int *dst_stride = args->dst_stride;
 
-    const uint32_t *srcp = (const uint32_t *)args->srcp[0];
-    uint16_t **dstp = (uint16_t **)args->dstp;
+    const uint32_t *srcp = static_cast<const uint32_t *>(args->srcp[0]);
+    uint16_t **dstp = reinterpret_cast<uint16_t **>(args->dstp);
 
     const uint32_t mask = 1023; // lowest 10 bits
 

@@ -33,14 +33,20 @@
 #include <algorithm>
 #include <memory>
 
+
+
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <codecvt>
 #include <windows.h>
 #endif
 
+// Because ImageMagick has no idea how to make sane headers
+using namespace MagickCore;
 
 //////////////////////////////////////////
 // Shared
@@ -123,18 +129,19 @@ struct WriteData {
     std::string filename;
     int firstNum;
     int quality;
+    MagickCore::CompressionType compressType;
     bool dither;
 
-    WriteData() : videoNode(nullptr), alphaNode(nullptr), vi(nullptr), quality(0), dither(true) {}
+    WriteData() : videoNode(nullptr), alphaNode(nullptr), vi(nullptr), quality(0), compressType(MagickCore::UndefinedCompression), dither(true) {}
 };
 
 static void VS_CC writeInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    WriteData *d = (WriteData *)* instanceData;
+    WriteData *d = static_cast<WriteData *>(*instanceData);
     vsapi->setVideoInfo(d->vi, 1, node);
 }
 
 static const VSFrameRef *VS_CC writeGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    WriteData *d = (WriteData *)* instanceData;
+    WriteData *d = static_cast<WriteData *>(*instanceData);
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->videoNode, frameCtx);
@@ -166,6 +173,8 @@ static const VSFrameRef *VS_CC writeGetFrame(int n, int activationReason, void *
         try {
             Magick::Image image(Magick::Geometry(width, height), Magick::Color(0, 0, 0, 0));
             image.magick(d->imgFormat);
+            if (d->compressType != MagickCore::UndefinedCompression)
+                image.compressType(d->compressType);
             image.quantizeDitherMethod(Magick::FloydSteinbergDitherMethod);
             image.quantizeDither(d->dither);
             image.quality(d->quality);
@@ -188,7 +197,53 @@ static const VSFrameRef *VS_CC writeGetFrame(int n, int activationReason, void *
 
             Magick::Pixels pixelCache(image);
 
-            if (fi->bytesPerSample == 2 && alphaFrame) {
+            if (fi->bytesPerSample == 4 && alphaFrame) {
+                const float scaleFactor = QuantumRange;
+
+                const float *r = reinterpret_cast<const float *>(vsapi->getReadPtr(frame, 0));
+                const float *g = reinterpret_cast<const float *>(vsapi->getReadPtr(frame, isGray ? 0 : 1));
+                const float *b = reinterpret_cast<const float *>(vsapi->getReadPtr(frame, isGray ? 0 : 2));
+                const float *a = reinterpret_cast<const float *>(vsapi->getReadPtr(alphaFrame, 0));
+
+                for (int y = 0; y < height; y++) {
+                    Magick::PixelPacket* pixels = pixelCache.get(0, y, width, 1);
+                    for (int x = 0; x < width; x++) {
+                        pixels[x].red = r[x] * scaleFactor;
+                        pixels[x].green = g[x] * scaleFactor;
+                        pixels[x].blue = b[x] * scaleFactor;
+                        pixels[x].opacity = a[x] * scaleFactor;
+                    }
+
+                    r += strideR / sizeof(float);
+                    g += strideG / sizeof(float);
+                    b += strideB / sizeof(float);
+                    a += strideA / sizeof(float);
+
+                    pixelCache.sync();
+                }
+            } else if (fi->bytesPerSample == 4) {
+                const float scaleFactor = QuantumRange;
+
+                const float *r = reinterpret_cast<const float *>(vsapi->getReadPtr(frame, 0));
+                const float *g = reinterpret_cast<const float *>(vsapi->getReadPtr(frame, isGray ? 0 : 1));
+                const float *b = reinterpret_cast<const float *>(vsapi->getReadPtr(frame, isGray ? 0 : 2));
+
+                for (int y = 0; y < height; y++) {
+                    Magick::PixelPacket* pixels = pixelCache.get(0, y, width, 1);
+                    for (int x = 0; x < width; x++) {
+                        pixels[x].red = r[x] * scaleFactor;
+                        pixels[x].green = g[x] * scaleFactor;
+                        pixels[x].blue = b[x] * scaleFactor;
+                        pixels[x].opacity = 0;
+                    }
+
+                    r += strideR / sizeof(float);
+                    g += strideG / sizeof(float);
+                    b += strideB / sizeof(float);
+
+                    pixelCache.sync();
+                }
+            } else if (fi->bytesPerSample == 2 && alphaFrame) {
                 const int shiftL = 16 - fi->bitsPerSample;
                 const int shiftR = fi->bitsPerSample;
 
@@ -296,7 +351,7 @@ static const VSFrameRef *VS_CC writeGetFrame(int n, int activationReason, void *
 }
 
 static void VS_CC writeFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
-    WriteData *d = (WriteData *)instanceData;
+    WriteData *d = static_cast<WriteData *>(instanceData);
     vsapi->freeNode(d->videoNode);
     vsapi->freeNode(d->alphaNode);
     delete d;
@@ -322,11 +377,76 @@ static void VS_CC writeCreate(const VSMap *in, VSMap *out, void *userData, VSCor
         return;
     }
 
+    const char *compressType = vsapi->propGetData(in, "compression_type", 0, &err);
+    if (!err) {
+        std::string s = compressType;
+        std::transform(s.begin(), s.end(), s.begin(), toupper);
+        if (s == "" || s == "UNDEFINED")
+            d->compressType = MagickCore::UndefinedCompression;
+        else if (s == "NONE")
+            d->compressType = MagickCore::NoCompression;
+        else if (s == "BZIP")
+            d->compressType = MagickCore::BZipCompression;
+        else if (s == "DXT1")
+            d->compressType = MagickCore::DXT1Compression;
+        else if (s == "DXT3")
+            d->compressType = MagickCore::DXT3Compression;
+        else if (s == "DXT5")
+            d->compressType = MagickCore::DXT5Compression;
+        else if (s == "FAX")
+            d->compressType = MagickCore::FaxCompression;
+        else if (s == "GROUP4")
+            d->compressType = MagickCore::Group4Compression;
+        else if (s == "JPEG")
+            d->compressType = MagickCore::JPEGCompression;
+        else if (s == "JPEG2000")
+            d->compressType = MagickCore::JPEG2000Compression;
+        else if (s == "LOSSLESSJPEG")
+            d->compressType = MagickCore::LosslessJPEGCompression;
+        else if (s == "LZW")
+            d->compressType = MagickCore::LZWCompression;
+        else if (s == "RLE")
+            d->compressType = MagickCore::RLECompression;
+        else if (s == "ZIP")
+            d->compressType = MagickCore::ZipCompression;
+        else if (s == "ZIPS")
+            d->compressType = MagickCore::ZipSCompression;
+        else if (s == "PIZ")
+            d->compressType = MagickCore::PizCompression;
+        else if (s == "PXR24")
+            d->compressType = MagickCore::Pxr24Compression;
+        else if (s == "B44")
+            d->compressType = MagickCore::B44Compression;
+        else if (s == "B44A")
+            d->compressType = MagickCore::B44ACompression;
+        else if (s == "LZMA")
+            d->compressType = MagickCore::LZMACompression;
+        else if (s == "JBIG1")
+            d->compressType = MagickCore::JBIG1Compression;
+        else if (s == "JBIG2")
+            d->compressType = MagickCore::JBIG2Compression;
+        else {
+            vsapi->setError(out, "Write: Unrecognized compression type");
+            return;
+        }
+    }
+
     d->videoNode = vsapi->propGetNode(in, "clip", 0, nullptr);
     d->vi = vsapi->getVideoInfo(d->videoNode);
-    if (!d->vi->format || (d->vi->format->colorFamily != cmRGB && d->vi->format->colorFamily != cmGray) || d->vi->format->sampleType != stInteger || d->vi->format->bitsPerSample > 16) {
+    if (!d->vi->format || (d->vi->format->colorFamily != cmRGB && d->vi->format->colorFamily != cmGray)
+        || (d->vi->format->sampleType == stInteger && d->vi->format->bitsPerSample > 16)
+#ifdef MAGICKCORE_HDRI_ENABLE
+        || (d->vi->format->sampleType == stFloat && d->vi->format->bitsPerSample != 32))
+#else
+        || (d->vi->format->sampleType == stFloat))
+#endif
+    {
         vsapi->freeNode(d->videoNode);
-        vsapi->setError(out, "Write: Only constant format 8-16 bit RGB and Grayscale input supported");
+#ifdef MAGICKCORE_HDRI_ENABLE
+        vsapi->setError(out, "Write: Only constant format 8-16 bit integer or float RGB and Grayscale input supported");
+#else
+        vsapi->setError(out, "Write: Only constant format 8-16 bit integer RGB and Grayscale input supported");
+#endif
         return;
     }
 
@@ -379,15 +499,14 @@ struct ReadData {
 };
 
 static void VS_CC readInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    ReadData *d = (ReadData *)* instanceData;
+    ReadData *d = static_cast<ReadData *>(*instanceData);
     vsapi->setVideoInfo(d->vi, d->alpha ? 2 : 1, node);
 }
 
 static const VSFrameRef *VS_CC readGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    ReadData *d = (ReadData *)* instanceData;
+    ReadData *d = static_cast<ReadData *>(*instanceData);
 
     if (activationReason == arInitial) {
-
         int index = vsapi->getOutputIndex(frameCtx);
         if (d->alpha && d->cachedFrameNum == n) {
             if ((index == 0 && !d->cachedAlpha) || (index == 1 && d->cachedAlpha)) {
@@ -439,8 +558,48 @@ static const VSFrameRef *VS_CC readGetFrame(int n, int activationReason, void **
                 strideA = vsapi->getStride(alphaFrame, 0);
 
             Magick::Pixels pixelCache(image);
+            if (fi->bytesPerSample == 4 && alphaFrame) {
+                const float scaleFactor = QuantumRange;
 
-            if (fi->bytesPerSample == 2 && alphaFrame) {
+                float *r = reinterpret_cast<float *>(vsapi->getWritePtr(frame, 0));
+                float *g = reinterpret_cast<float *>(vsapi->getWritePtr(frame, isGray ? 0 : 1));
+                float *b = reinterpret_cast<float *>(vsapi->getWritePtr(frame, isGray ? 0 : 2));
+                float *a = reinterpret_cast<float *>(vsapi->getWritePtr(alphaFrame, 0));
+
+                for (int y = 0; y < height; y++) {
+                    const Magick::PixelPacket* pixels = pixelCache.getConst(0, y, width, 1);
+                    for (int x = 0; x < width; x++) {
+                        r[x] = pixels[x].red / scaleFactor;
+                        g[x] = pixels[x].green / scaleFactor;
+                        b[x] = pixels[x].blue / scaleFactor;
+                        a[x] = pixels[x].opacity / scaleFactor;
+                    }
+
+                    r += strideR / sizeof(float);
+                    g += strideG / sizeof(float);
+                    b += strideB / sizeof(float);
+                    a += strideA / sizeof(float);
+                }
+            } else if (fi->bytesPerSample == 4) {
+                const float scaleFactor = QuantumRange;
+
+                float *r = reinterpret_cast<float *>(vsapi->getWritePtr(frame, 0));
+                float *g = reinterpret_cast<float *>(vsapi->getWritePtr(frame, isGray ? 0 : 1));
+                float *b = reinterpret_cast<float *>(vsapi->getWritePtr(frame, isGray ? 0 : 2));
+
+                for (int y = 0; y < height; y++) {
+                    const Magick::PixelPacket* pixels = pixelCache.getConst(0, y, width, 1);
+                    for (int x = 0; x < width; x++) {
+                        r[x] = pixels[x].red / scaleFactor;
+                        g[x] = pixels[x].green / scaleFactor;
+                        b[x] = pixels[x].blue / scaleFactor;
+                    }
+
+                    r += strideR / sizeof(float);
+                    g += strideG / sizeof(float);
+                    b += strideB / sizeof(float);
+                }
+            } else if (fi->bytesPerSample == 2 && alphaFrame) {
                 const int shiftR = 16 - fi->bitsPerSample;
 
                 uint16_t *r = reinterpret_cast<uint16_t *>(vsapi->getWritePtr(frame, 0));
@@ -451,10 +610,10 @@ static const VSFrameRef *VS_CC readGetFrame(int n, int activationReason, void **
                 for (int y = 0; y < height; y++) {
                     const Magick::PixelPacket* pixels = pixelCache.getConst(0, y, width, 1);
                     for (int x = 0; x < width; x++) {
-                        r[x] = pixels[x].red >> shiftR;
-                        g[x] = pixels[x].green >> shiftR;
-                        b[x] = pixels[x].blue >> shiftR;
-                        a[x] = pixels[x].opacity >> shiftR;
+                        r[x] = (unsigned)pixels[x].red >> shiftR;
+                        g[x] = (unsigned)pixels[x].green >> shiftR;
+                        b[x] = (unsigned)pixels[x].blue >> shiftR;
+                        a[x] = (unsigned)pixels[x].opacity >> shiftR;
                     }
 
                     r += strideR / sizeof(uint16_t);
@@ -472,9 +631,9 @@ static const VSFrameRef *VS_CC readGetFrame(int n, int activationReason, void **
                 for (int y = 0; y < height; y++) {
                     const Magick::PixelPacket* pixels = pixelCache.getConst(0, y, width, 1);
                     for (int x = 0; x < width; x++) {
-                        r[x] = pixels[x].red >> shiftR;
-                        g[x] = pixels[x].green >> shiftR;
-                        b[x] = pixels[x].blue >> shiftR;
+                        r[x] = (unsigned)pixels[x].red >> shiftR;
+                        g[x] = (unsigned)pixels[x].green >> shiftR;
+                        b[x] = (unsigned)pixels[x].blue >> shiftR;
                     }
 
                     r += strideR / sizeof(uint16_t);
@@ -490,10 +649,10 @@ static const VSFrameRef *VS_CC readGetFrame(int n, int activationReason, void **
                 for (int y = 0; y < height; y++) {
                     const Magick::PixelPacket* pixels = pixelCache.getConst(0, y, width, 1);
                     for (int x = 0; x < width; x++) {
-                        r[x] = pixels[x].red >> 8;
-                        g[x] = pixels[x].green >> 8;
-                        b[x] = pixels[x].blue >> 8;
-                        a[x] = pixels[x].opacity >> 8;
+                        r[x] = (unsigned)pixels[x].red >> 8;
+                        g[x] = (unsigned)pixels[x].green >> 8;
+                        b[x] = (unsigned)pixels[x].blue >> 8;
+                        a[x] = (unsigned)pixels[x].opacity >> 8;
                     }
 
                     r += strideR;
@@ -509,9 +668,9 @@ static const VSFrameRef *VS_CC readGetFrame(int n, int activationReason, void **
                 for (int y = 0; y < height; y++) {
                     const Magick::PixelPacket* pixels = pixelCache.getConst(0, y, width, 1);
                     for (int x = 0; x < width; x++) {
-                        r[x] = pixels[x].red >> 8;
-                        g[x] = pixels[x].green >> 8;
-                        b[x] = pixels[x].blue >> 8;
+                        r[x] = (unsigned)pixels[x].red >> 8;
+                        g[x] = (unsigned)pixels[x].green >> 8;
+                        b[x] = (unsigned)pixels[x].blue >> 8;
                     }
 
                     r += strideR;
@@ -547,7 +706,7 @@ static const VSFrameRef *VS_CC readGetFrame(int n, int activationReason, void **
 }
 
 static void VS_CC readFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
-    ReadData *d = (ReadData *)instanceData;
+    ReadData *d = static_cast<ReadData *>(instanceData);
     delete d;
 }
 
@@ -565,12 +724,13 @@ static void VS_CC readCreate(const VSMap *in, VSMap *out, void *userData, VSCore
 
     d->alpha = !!vsapi->propGetInt(in, "alpha", 0, &err);
     d->mismatch = !!vsapi->propGetInt(in, "mismatch", 0, &err);
+
     int numElem = vsapi->propNumElements(in, "filename");
     d->filenames.resize(numElem);
     for (int i = 0; i < numElem; i++)
         d->filenames[i] = vsapi->propGetData(in, "filename", i, nullptr);
     
-    d->vi[0] = { nullptr, 30, 1, 0, 0, d->filenames.size(), 0 };
+    d->vi[0] = { nullptr, 30, 1, 0, 0, static_cast<int>(d->filenames.size()), 0 };
     // See if it's a single filename with number substitution and check how many files exist
     if (d->vi[0].numFrames == 1 && specialPrintf(d->filenames[0], 0) != d->filenames[0]) {
         d->fileListMode = false;
@@ -578,10 +738,9 @@ static void VS_CC readCreate(const VSMap *in, VSMap *out, void *userData, VSCore
         for (int i = d->firstNum; i < INT_MAX; i++) {
 #ifdef _WIN32
             std::string printedStr(specialPrintf(d->filenames[0], i));
-            int numChars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, printedStr.c_str(), static_cast<int>(printedStr.length()), nullptr, 0);
-            std::vector<wchar_t> charBuf(numChars + 1);
-            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, printedStr.c_str(), static_cast<int>(printedStr.length()), charBuf.data(), static_cast<int>(charBuf.size()));
-            FILE * f = _wfopen(charBuf.data(), L"rb");
+            std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> conversion;
+            std::wstring wPath = conversion.from_bytes(d->filenames[0]);
+            FILE * f = _wfopen(wPath.c_str(), L"rb");
 #else
             FILE * f = fopen(specialPrintf(d->filenames[0], i).c_str(), "rb");
 #endif
@@ -602,7 +761,11 @@ static void VS_CC readCreate(const VSMap *in, VSMap *out, void *userData, VSCore
     try {
         Magick::Image image;
         image.ping(d->fileListMode ? d->filenames[0] : specialPrintf(d->filenames[0], d->firstNum));
+#ifdef MAGICKCORE_HDRI_ENABLE
+        int depth = std::min(std::max(static_cast<int>(image.depth()), 8), 32);
+#else
         int depth = std::min(std::max(static_cast<int>(image.depth()), 8), 16);
+#endif
 
         if (!d->mismatch || d->vi[0].numFrames == 1) {
             d->vi[0].height = static_cast<int>(image.rows());
@@ -610,13 +773,13 @@ static void VS_CC readCreate(const VSMap *in, VSMap *out, void *userData, VSCore
             VSColorFamily cf = cmRGB;
             if (isGrayColorspace(image.colorSpace()))
                 cf = cmGray;
-            d->vi[0].format = vsapi->registerFormat(cf, stInteger, depth, 0, 0, core);
+            d->vi[0].format = vsapi->registerFormat(cf, (depth > 16) ? stFloat : stInteger, depth, 0, 0, core);
         }
 
         if (d->alpha) {
             d->vi[1] = d->vi[0];
             if (d->vi[0].format)
-                d->vi[1].format = vsapi->registerFormat(cmGray, stInteger, depth, 0, 0, core);
+                d->vi[1].format = vsapi->registerFormat(cmGray, d->vi[0].format->sampleType, depth, 0, 0, core);
         }
     } catch (Magick::Exception &e) {
         vsapi->setError(out, (std::string("Read: Failed to read image properties: ") + e.what()).c_str());
@@ -632,6 +795,6 @@ static void VS_CC readCreate(const VSMap *in, VSMap *out, void *userData, VSCore
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
     configFunc("com.vapoursynth.imwri", "imwri", "VapourSynth ImageMagick Writer/Reader", VAPOURSYNTH_API_VERSION, 1, plugin);
-    registerFunc("Write", "clip:clip;imgformat:data;filename:data;firstnum:int:opt;quality:int:opt;dither:int:opt;alpha:clip:opt;", writeCreate, nullptr, plugin);
+    registerFunc("Write", "clip:clip;imgformat:data;filename:data;firstnum:int:opt;quality:int:opt;dither:int:opt;compression_type:data:opt;alpha:clip:opt;", writeCreate, nullptr, plugin);
     registerFunc("Read", "filename:data[];firstnum:int:opt;mismatch:int:opt;alpha:int:opt;", readCreate, nullptr, plugin);
 }

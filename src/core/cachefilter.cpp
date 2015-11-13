@@ -36,13 +36,15 @@ VSCache::CacheAction VSCache::recommendSize() {
         return caNoChange; // not enough requests to know what to do so keep it this way
     }
 
-    //bool shrink = (nearMiss == 0 && hits == 0 && ((farMiss*10) / total >= 9));
-    //vsWarning("Cache #%d stats (%s): %d %d %d %d, size: %d", id, shrink ? "shrink" : "keep", total, farMiss, nearMiss, hits, getMaxFrames());
-    if ((nearMiss*10) / total >= 1) { // growing the cache would be beneficial
+    bool shrink = (nearMiss == 0 && hits == 0 && ((farMiss * 10) / total >= 9));
+    bool grow = ((nearMiss * 10) / total >= 1);
+#ifdef VS_CACHE_DEBUG
+    vsWarning("Cache (%p) stats (%s): %d %d %d %d, size: %d", (void *)this, shrink ? "shrink" : (grow ? "grow" : "keep"), total, farMiss, nearMiss, hits, maxSize);
+#endif
+    if (grow) { // growing the cache would be beneficial
         clearStats();
         return caGrow;
-    } else if (nearMiss == 0 && hits == 0 && ((farMiss*10) / total >= 9)) { // probably a linear scan, no reason to waste space here
-
+    } else if (shrink) { // probably a linear scan, no reason to waste space here
         clearStats();
         return caShrink;
     } else {
@@ -135,6 +137,7 @@ void VSCache::adjustSize(bool needMemory) {
             case VSCache::caShrink:
                 setMaxFrames(std::max(getMaxFrames() - 1, 1));
                 break;
+            default:;
             }
         } else {
             switch (recommendSize()) {
@@ -150,17 +153,18 @@ void VSCache::adjustSize(bool needMemory) {
                 if (getMaxFrames() <= 1)
                     clear();
                 setMaxFrames(std::max(getMaxFrames() - 1, 1));
-                break;;
+                break;
+            default:;
             }
         }
     }
 }
 
 static void VS_CC cacheInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
-    VSNodeRef *video = vsapi->propGetNode(in, "clip", 0, 0);
+    VSNodeRef *video = vsapi->propGetNode(in, "clip", 0, nullptr);
     int err;
-    int fixed = !!vsapi->propGetInt(in, "fixed", 0, &err);
-    CacheInstance *c = new CacheInstance(video, node, core, !!fixed);
+    bool fixed = !!vsapi->propGetInt(in, "fixed", 0, &err);
+    CacheInstance *c = new CacheInstance(video, node, core, fixed);
 
     int size = int64ToIntS(vsapi->propGetInt(in, "size", 0, &err));
 
@@ -174,7 +178,7 @@ static void VS_CC cacheInit(VSMap *in, VSMap *out, void **instanceData, VSNode *
 }
 
 static const VSFrameRef *VS_CC cacheGetframe(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    CacheInstance *c = (CacheInstance *) * instanceData;
+    CacheInstance *c = static_cast<CacheInstance *>(*instanceData);
 
     if (activationReason == arInitial) {
         PVideoFrame f(c->cache[n]);
@@ -183,7 +187,7 @@ static const VSFrameRef *VS_CC cacheGetframe(int n, int activationReason, void *
             return new VSFrameRef(f);
 
         vsapi->requestFrameFilter(n, c->clip, frameCtx);
-        return NULL;
+        return nullptr;
     } else if (activationReason == arAllFramesReady) {
         const VSFrameRef *r = vsapi->getFrameFilter(n, c->clip, frameCtx);
         c->cache.insert(n, r->frame);
@@ -194,7 +198,7 @@ static const VSFrameRef *VS_CC cacheGetframe(int n, int activationReason, void *
 }
 
 static void VS_CC cacheFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
-    CacheInstance *c = (CacheInstance *)instanceData;
+    CacheInstance *c = static_cast<CacheInstance *>(instanceData);
     c->removeCache();
     vsapi->freeNode(c->clip);
     delete c;
@@ -207,5 +211,5 @@ static void VS_CC createCacheFilter(const VSMap *in, VSMap *out, void *userData,
 }
 
 void VS_CC cacheInitialize(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
-    registerFunc("Cache", "clip:clip;size:int:opt;fixed:int:opt;", &createCacheFilter, NULL, plugin);
+    registerFunc("Cache", "clip:clip;size:int:opt;fixed:int:opt;", &createCacheFilter, nullptr, plugin);
 }

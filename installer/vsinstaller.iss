@@ -1,5 +1,5 @@
 #define AppName = 'VapourSynth'
-#define Version = 'R26'
+#define Version = 'R28'
 
 [Setup]
 OutputDir=Compiled
@@ -17,7 +17,7 @@ AppPublisher=Fredrik Mellbin
 AppPublisherURL=http://www.vapoursynth.com/
 AppSupportURL=http://www.vapoursynth.com/
 AppUpdatesURL=http://www.vapoursynth.com/
-VersionInfoVersion=1.26.0.0
+VersionInfoVersion=1.28.0.0
 DefaultDirName={pf32}\VapourSynth
 DefaultGroupName=VapourSynth
 AllowCancelDuringInstall=no
@@ -28,6 +28,9 @@ PrivilegesRequired=admin
 FlatComponentsList=yes
 ArchitecturesAllowed=x86 x64
 ArchitecturesInstallIn64BitMode=x64
+
+[Languages]
+Name: "en"; MessagesFile: "compiler:Default.isl"
 
 [Types]
 Name: Full; Description: Full installation; Flags: iscustom
@@ -49,8 +52,8 @@ Source: template.vpy; DestDir: {app}; Flags: ignoreversion uninsrestartdelete re
 Source: vapoursynth.pth; DestDir: {code:GetPythonPath32}; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs32
 Source: vapoursynth.pth; DestDir: {code:GetPythonPath64}; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs64
 
-Source: x86\vapoursynth.pyd; DestDir: {code:GetPythonPath32}\vapoursynth; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs32
-Source: x64\vapoursynth.pyd; DestDir: {code:GetPythonPath64}\vapoursynth; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs64
+Source: ..\vapoursynth.cp35-win32.pyd; DestDir: {code:GetPythonPath32}\vapoursynth; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs32
+Source: ..\vapoursynth.cp35-win_amd64.pyd; DestDir: {code:GetPythonPath64}\vapoursynth; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs64
 
 Source: ..\msvc_project\Release\vapoursynth.dll; DestDir: {code:GetPythonPath32}\vapoursynth; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs32
 Source: ..\msvc_project\x64\Release\vapoursynth.dll; DestDir: {code:GetPythonPath64}\vapoursynth; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs64
@@ -68,11 +71,12 @@ Source: ..\msvc_project\x64\Release\vspipe.exe; DestDir: {app}\core64; Flags: ig
 Source: ..\msvc_project\Release\vsvfw.dll; DestDir: {sys}; Flags: uninsrestartdelete restartreplace 32bit; Components: vs32
 Source: ..\msvc_project\x64\Release\vsvfw.dll; DestDir: {sys}; Flags: uninsrestartdelete restartreplace 64bit; Components: vs64
 
+Source: ..\msvc_project\Release\vsscript.dll; DestDir: {app}\core32; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs32
+Source: ..\msvc_project\x64\Release\vsscript.dll; DestDir: {app}\core64; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs64
 Source: ..\msvc_project\Release\vsscript.dll; DestDir: {sys}; Flags: uninsrestartdelete restartreplace 32bit; Components: vs32
 Source: ..\msvc_project\x64\Release\vsscript.dll; DestDir: {sys}; Flags: uninsrestartdelete restartreplace 64bit; Components: vs64
-;vs2010 and vs2013 runtime installers
-Source: x86\rtx86.msi; DestDir: {app}\runtimes; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs32
-Source: x64\rtx64.msi; DestDir: {app}\runtimes; Flags: ignoreversion uninsrestartdelete restartreplace; Components: vs64
+
+
 ;sdk
 Source: ..\include\VapourSynth.h; DestDir: {app}\sdk\include\vapoursynth; Flags: ignoreversion uninsrestartdelete restartreplace; Components: sdk
 Source: ..\include\VSHelper.h; DestDir: {app}\sdk\include\vapoursynth; Flags: ignoreversion uninsrestartdelete restartreplace; Components: sdk
@@ -143,9 +147,6 @@ Root: HKLM; Subkey: SOFTWARE\Classes\vsfile\DefaultIcon; ValueType: string; Valu
 Root: HKLM; Subkey: SOFTWARE\Classes\AVIFile\Extensions\VPY; ValueType: string; ValueName: ""; ValueData: "{{58F74CA0-BD0E-4664-A49B-8D10E6F0C131}"; Flags: uninsdeletevalue uninsdeletekeyifempty; Components: vs64
 
 [Run]
-Filename: "msiexec.exe"; Parameters: "/package ""{app}\runtimes\rtx86.msi"" /quiet /norestart ARPSYSTEMCOMPONENT=1"; Components: vs32
-Filename: "msiexec.exe"; Parameters: "/package ""{app}\runtimes\rtx64.msi"" /quiet /norestart ARPSYSTEMCOMPONENT=1"; Components: vs64
-
 Filename: "{win}\pfm.exe"; Parameters: "register ""{app}\core64\vsfs.dll"""; Tasks: registervsfs\registervsfs64; Flags: skipifdoesntexist
 Filename: "{win}\pfm.exe"; Parameters: "register ""{app}\core32\vsfs.dll"""; Tasks: registervsfs\registervsfs32; Flags: skipifdoesntexist
 
@@ -154,10 +155,16 @@ Filename: "{win}\pfm.exe"; Parameters: "unregister ""{app}\core64\vsfs.dll"""; T
 Filename: "{win}\pfm.exe"; Parameters: "unregister ""{app}\core32\vsfs.dll"""; Tasks: registervsfs\registervsfs32; Flags: skipifdoesntexist
 
 [Code]
+#include "scripts\products.iss"
+#include "scripts\products\msiproduct.iss"
+#include "scripts\products\vcredist2013.iss"
+#include "scripts\products\vcredist2015.iss"
 
 var
   PythonPath32: string;
   PythonPath64: string;
+  Runtimes32Added: Boolean;
+  Runtimes64Added: Boolean;
 
 function HasPython32: Boolean;
 begin
@@ -172,21 +179,24 @@ end;
 function InitializeSetup: Boolean;
 var Success: Boolean;
 begin
-  Success := RegQueryStringValue(HKCU32, 'SOFTWARE\Python\PythonCore\3.4\InstallPath', '', PythonPath32);
+  Runtimes32Added := False;
+  Runtimes64Added := False;
+
+  Success := RegQueryStringValue(HKCU32, 'SOFTWARE\Python\PythonCore\3.5-32\InstallPath', '', PythonPath32);
   if not Success then
-    RegQueryStringValue(HKLM32, 'SOFTWARE\Python\PythonCore\3.4\InstallPath', '', PythonPath32);
+    RegQueryStringValue(HKLM32, 'SOFTWARE\Python\PythonCore\3.5-32\InstallPath', '', PythonPath32);
 
   if Is64BitInstallMode then
   begin
-    Success := RegQueryStringValue(HKCU, 'SOFTWARE\Python\PythonCore\3.4\InstallPath', '', PythonPath64);
+    Success := RegQueryStringValue(HKCU, 'SOFTWARE\Python\PythonCore\3.5\InstallPath', '', PythonPath64);
     if not Success then
-      RegQueryStringValue(HKLM, 'SOFTWARE\Python\PythonCore\3.4\InstallPath', '', PythonPath64);
+      RegQueryStringValue(HKLM, 'SOFTWARE\Python\PythonCore\3.5\InstallPath', '', PythonPath64);
   end;
 
   Result := HasPython32 or HasPython64;
   if not Result then
   begin
-    MsgBox('No Python 3.4 installations found.', mbCriticalError, MB_OK);
+    MsgBox('No Python 3.5 installations found.', mbCriticalError, MB_OK);
   end
   else if PythonPath32 = PythonPath64 then
   begin
@@ -276,5 +286,24 @@ begin
       Result := False;
       MsgBox('At least one version of the core library has to be installed.', mbCriticalError, MB_OK)
     end;
+  end
+  else if CurPageID = wpReady then
+  begin
+    if IsComponentSelected('vs32') and not Runtimes32Added then
+    begin
+      SetForceX86(True);
+      vcredist2013();
+      vcredist2015();
+      SetForceX86(False);
+      Runtimes32Added := True;
+    end;
+    if IsComponentSelected('vs64') and not Runtimes64Added then
+    begin
+      vcredist2013();
+      vcredist2015();
+      Runtimes64Added := True;
+    end;
+    Result := NextButtonClick2(CurPageID);
   end;
 end;
+

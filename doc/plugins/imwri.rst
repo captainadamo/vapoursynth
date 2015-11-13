@@ -5,14 +5,14 @@ ImageMagick Writer-Reader
 
 ImageMagick Writer-Reader (IMWRI) is a plugin that can read and write many image formats with up to 16 bits per channel.
 
-.. function:: Write(clip clip, string imgformat, string filename[, int firstnum = 0, int quality=75, bint dither=1, clip alpha])
+.. function:: Write(clip clip, string imgformat, string filename[, int firstnum = 0, int quality=75, bint dither=1, string compression_type, clip alpha])
    :module: imwri
 
    Write will write each frame to disk as it's requested. If a frame is never requested it's also never written to disk.
  
    Parameters:
       clip
-         Input clip. Only 8-16 bit RGB supported. Variable dimensions are allowed.
+         Input clip. Only 8-16 bit RGB and Gray supported. Variable dimensions are allowed. If compiled against a HDRI enabled ImageMagick float is also supported.
 
       imgformat
          The name of the output format. Examples of supported format strings are "JPEG", "PNG", and "DPX". Visit the ImageMagick website for a full list.
@@ -28,6 +28,10 @@ ImageMagick Writer-Reader (IMWRI) is a plugin that can read and write many image
 
       dither
          Use Floyd–Steinberg dithering if the input needs to be reduced in depth.
+         
+      compression_type
+         Select the specific compression type for *imgformats* that have more than one possible compression method. Recognized constants are:
+         Undefined, None, BZip, DXT1, DXT3, DXT5, Fax, Group4, JPEG, JPEG2000, LosslessJPEG, LZW, RLE, Zip, ZipS, Piz, Pxr24, B44, B44A, LZMA, JBIG1, JBIG2
 
       alpha
          A grayscale clip containing the alpha channel for the image to write. Apart from being grayscale, its properties must be identical to the main *clip*.

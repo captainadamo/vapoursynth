@@ -1,4 +1,59 @@
+r29:
+now internally prioritizes frames based on original request order, should improve speed and frame time consistency in certain conditions
+more specific error messages in many filters (nodame)
+fixed the shown matrix names in clipinfo
+fixed compilation on non x86 targets, in imwri and vshelper.h without c++11 enabled, all introduced in r28
+fixed vsfatal corrupt output (nodame)
+fixed uninitialized value in frame pool
+
+r28:
+fixed eedi3 image corruption with dh=true (nodame)
+planedifference is now considered deprecated, it can be replaced with one or two calls to planeaverage which will also yield a sign
+fpu state check now doesn't mind if precision is set to more than double
+VFM now uses the _FieldBased flag
+added float support to imwri, can now input and output float when compiled against a hdri enabled q16 imagemagick
+added an argument to set the compression type in imwri
+the installer will now download and install the vs2013 and vs2015 runtimes if needed
+now uses python 3.5
+fixed vdecimate parallel mode
+pow is now accepted in expr expressions
+expr now accepts up to 26 inputs (x-z, a-w)
+expr now has runtime code generation on x86 cpus using jitasm
+now normalizes the framerate returned from avisynth filters
+it is now a fatal error to set the videoinfo of a filter to a non-normalized framerate
+added a few more checks for proper api usage
+get_core() can now be used in callbacks and other external functions in python
+now returns an error message saying that windows needs to be updated in certain cases when plugin loading fails
+fixed loop filter (nodame)
+lut and lut2 can now output float as well
+now accepts scripts that start with a BOM as well
+fixed an image corruption bug with 9-16 bit input to rgvs when the c++ code is used
+fixed division by zero issues in muldivrational in vshelper.h
+blankclip can now create 0 (unknown/variable) fps clips
+added float support to planedifference and planeaverage
+added half support to addborders
+relevant compile time options are now in the version string
+
 r27:
+improved clipinfo so it shows more relevant information
+fixed proptoclip crash on certain errors
+added a rewritten version of genericfilters to the core (nodame)
+fixed the not (required two operands instead of one, asm broken) and swap (only required one operand instead of two) operators in the expr filter
+renamed the x and y arguments in cropabs to left and top to be clearer and match croprel
+addborders now rejects negative borders properly and passes through clips unchanged when all borders are 0
+several bugfixes to the bundled genericfilters
+added compile time option to have additional guard memory around frames to detect out of bounds writes in filters
+added setframeprop filter (nodame)
+the framerate and the frame duration property should now be a normalized number
+all internal filters now return an error if the returned clip is longer than INT_MAX instead of undefined behavior
+"unknown" length clips have been deprecated and a fatal error will happen if any plugin returns them, this change is because it was complicated, annoying and accomplished nothing compared to INT_MAX length clips
+freezeframes now doesn't need to have the ranges specified in ascending order
+interleave, separatefield and selectevery now properly adjusts the framerate including the durations
+changed the meaning of _FieldBased to be able to signal progressive/bff/tff material, this is now used by ffms2, eedi3 and separatefields
+fixed memory leak in assvapour destructor
+the identifiers used for keys in vsmap can only be alphanumeric and _, anything else will be rejected
+the expr filter now does constant folding which makes it faster in many cases (nodame)
+vspipe can now output timecode v2 files (nodame)
 splice and interleave now properly reject clips with mismatched fps unless mismatch is set
 fixed possible bad behavior/crash in FrameEval under rare circumstances
 fixed truncation of last digit of integers in text.FrameProps

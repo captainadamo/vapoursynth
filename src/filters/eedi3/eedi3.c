@@ -412,7 +412,7 @@ static VSFrameRef *copyPad(const VSFrameRef *src, int fn, VSFrameContext *frameC
         // fixme, probably pads a bit too much with subsampled formats
         uint8_t *dstp = vsapi->getWritePtr(srcPF, b);
         const int dst_pitch = vsapi->getStride(srcPF, b);
-        const int height = vsapi->getFrameHeight(src, b) + 8;
+        const int height = vsapi->getFrameHeight(src, b) * (d->dh ? 2 : 1) + 8;
         const int width = vsapi->getFrameWidth(src, b) + 24;
         dstp += (4 + off) * dst_pitch;
 
@@ -456,17 +456,31 @@ static const VSFrameRef *VS_CC eedi3GetFrame(int n, int activationReason, void *
             vsapi->requestFrameFilter(n, d->sclip, frameCtx);
     } else if(activationReason == arAllFramesReady) {
 
+        const VSFrameRef *src = vsapi->getFrameFilter(d->field > 1 ? (n >> 1) : n, d->node, frameCtx);
+
         int field_n;
+
+        int err = 0;
+        int fieldbased = int64ToIntS(vsapi->propGetInt(vsapi->getFramePropsRO(src), "_FieldBased", 0, &err));
+        int effective_field = d->field;
+        if (effective_field > 1)
+            effective_field -= 2;
+
+        if (fieldbased == 1)
+            effective_field = 0;
+        else if (fieldbased == 2)
+            effective_field = 1;
 
         if(d->field > 1) {
             if(n & 1)
-                field_n = d->field == 3 ? 0 : 1;
+                field_n = (effective_field == 0);
             else
-                field_n = d->field == 3 ? 1 : 0;
-        } else
-            field_n = d->field;
+                field_n = (effective_field == 1);
+        } else {
+            field_n = effective_field;
+        }
 
-        const VSFrameRef *src = vsapi->getFrameFilter(d->field > 1 ? (n >> 1) : n, d->node, frameCtx);
+
         VSFrameRef *srcPF = copyPad(src, field_n, frameCtx, core, vsapi, instanceData);
 
         const VSFrameRef *scpPF;
@@ -641,6 +655,19 @@ static const VSFrameRef *VS_CC eedi3GetFrame(int n, int activationReason, void *
         VS_ALIGNED_FREE(workspace);
         vsapi->freeFrame(srcPF);
         vsapi->freeFrame(scpPF);
+
+        if (d->field > 1) {
+            VSMap *dst_props = vsapi->getFramePropsRW(dst);
+            int err_num, err_den;
+            int64_t duration_num = vsapi->propGetInt(dst_props, "_DurationNum", 0, &err_num);
+            int64_t duration_den = vsapi->propGetInt(dst_props, "_DurationDen", 0, &err_den);
+            if (!err_num && !err_den) {
+                muldivRational(&duration_num, &duration_den, 1, 2); // Divide duration by 2.
+                vsapi->propSetInt(dst_props, "_DurationNum", duration_num, paReplace);
+                vsapi->propSetInt(dst_props, "_DurationDen", duration_den, paReplace);
+            }
+        }
+
         return dst;
     }
 
@@ -768,6 +795,11 @@ static void VS_CC eedi3Create(const VSMap *in, VSMap *out, void *userData, VSCor
         goto error;
     }
 
+    if (d.field > 1 && (d.vi.numFrames > INT_MAX / 2)) {
+        sprintf(msg, "eedi3:  resulting clip is too long!");
+        goto error;
+    }
+
     if(d.alpha < 0.0f || d.alpha > 1.0f) {
         sprintf(msg, "eedi3:  0 <= alpha <= 1!");
         goto error;
@@ -810,7 +842,7 @@ static void VS_CC eedi3Create(const VSMap *in, VSMap *out, void *userData, VSCor
 
     if(d.field > 1) {
         d.vi.numFrames *= 2;
-        d.vi.fpsNum *= 2;
+        muldivRational(&d.vi.fpsNum, &d.vi.fpsDen, 2, 1);
     }
 
     if(d.dh)

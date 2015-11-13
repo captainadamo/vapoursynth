@@ -16,9 +16,10 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-#define _BSD_SOURCE
 #include <string.h>
 #include <ass/ass.h>
+#include <time.h>
+#include <inttypes.h>
 
 #include "VapourSynth.h"
 #include "VSHelper.h"
@@ -28,8 +29,17 @@
 #define _b(c) (((c) >> 8) & 0xFF)
 #define _a(c) (255 - ((c) & 0xFF))
 
+#define div256(x) (((x + 128) >> 8))
+#define div255(x) ((div256(x + div256(x))))
+
 #define blend(srcA, srcRGB, dstA, dstRGB, outA)  \
-    (((srcA * 255 * srcRGB + (dstRGB * dstA * (255 - srcA))) / outA + 255) >> 8)
+    ((srcA * 255 * srcRGB + (dstRGB * dstA * (255 - srcA))) / outA)
+
+struct AssTime {
+    time_t seconds;
+    int milliseconds;
+};
+typedef struct AssTime AssTime;
 
 struct AssData {
     VSNodeRef *node;
@@ -53,6 +63,9 @@ struct AssData {
     ASS_Track *ass;
     ASS_Library *ass_library;
     ASS_Renderer *ass_renderer;
+
+    int startframe;
+    int endframe;
 };
 typedef struct AssData AssData;
 
@@ -70,8 +83,12 @@ static char *strrepl(const char *in, const char *str, const char *repl)
         inptr++;
     }
 
-    if(count == 0)
-        return strdup(in);
+    if(count == 0) {
+        size_t in_len = strlen(in);
+        res = malloc(in_len + 1);
+        memcpy(res, in, in_len + 1);
+        return res;
+    }
 
     siz = (strlen(in) - strlen(str) * count + strlen(repl) * count) *
           sizeof(char) + 1;
@@ -108,6 +125,16 @@ static void VS_CC assInit(VSMap *in, VSMap *out, void **instanceData,
 {
     AssData *d = (AssData *) * instanceData;
     vsapi->setVideoInfo(d->vi, 2, node);
+
+    d->lastframe = vsapi->newVideoFrame(d->vi[0].format,
+                                        d->vi[0].width,
+                                        d->vi[0].height,
+                                        NULL, core);
+
+    d->lastalpha = vsapi->newVideoFrame(d->vi[1].format,
+                                        d->vi[1].width,
+                                        d->vi[1].height,
+                                        NULL, core);
 
     d->ass_library = ass_library_init();
 
@@ -148,7 +175,7 @@ static void VS_CC assInit(VSMap *in, VSMap *out, void **instanceData,
     ass_set_fonts(d->ass_renderer, NULL, NULL, 1, NULL, 1);
 
     if(d->file == NULL) {
-        char *str, *text, x[16], y[16];
+        char *str, *text, x[16], y[16], start[16], end[16];
         size_t siz;
         const char *fmt = "[Script Info]\n"
                           "ScriptType: v4.00+\n"
@@ -159,18 +186,54 @@ static void VS_CC assInit(VSMap *in, VSMap *out, void **instanceData,
                           "Style: Default,%s\n"
                           "[Events]\n"
                           "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
-                          "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,%s\n";
+                          "Dialogue: 0,%s,%s,Default,,0,0,0,,%s\n";
 
         sprintf(x, "%d", d->vi[0].width);
         sprintf(y, "%d", d->vi[0].height);
 
+        {
+            int64_t timeint, time_ms;
+            time_t time_secs;
+            struct tm * ti;
+            if(d->startframe != 0 && (INT64_MAX / d->vi[0].fpsDen) < ((int64_t)d->startframe * 100)) {
+                //Overflow would occur
+                vsapi->setError(out, "Unable to calculate start time");
+                timeint = 0;
+            }
+            else {
+                timeint = (int64_t)d->startframe * 100 * d->vi[0].fpsDen / d->vi[0].fpsNum;
+            }
+            time_secs = timeint / 100;
+            time_ms = timeint % 100;
+            ti = gmtime(&time_secs);
+            sprintf(start, "%d:%02d:%02d.%02"PRIu64, ti->tm_hour, ti->tm_min, ti->tm_sec, time_ms);
+        }
+
+        {
+            int64_t timeint, time_ms;
+            time_t time_secs;
+            struct tm * ti;
+            if(d->endframe != 0 && (INT64_MAX / d->vi[0].fpsDen) < ((int64_t)d->endframe * 100)) {
+                //Overflow would occur
+                vsapi->setError(out, "Unable to calculate end time");
+                timeint = 0;
+            }
+            else {
+                timeint = (int64_t)d->endframe * 100 * d->vi[0].fpsDen / d->vi[0].fpsNum;
+            }
+            time_secs = timeint / 100;
+            time_ms = timeint % 100;
+            ti = gmtime(&time_secs);
+            sprintf(end, "%d:%02d:%02d.%02"PRIu64, ti->tm_hour, ti->tm_min, ti->tm_sec, time_ms);
+        }
+
         text = strrepl(d->text, "\n", "\\N");
 
         siz = (strlen(fmt) + strlen(x) + strlen(y) + strlen(d->style) +
-               strlen(text)) * sizeof(char);
+               strlen(start) + strlen(end) + strlen(text)) * sizeof(char);
 
         str = malloc(siz);
-        sprintf(str, fmt, x, y, d->style, text);
+        sprintf(str, fmt, x, y, d->style, start, end, text);
 
         free(text);
 
@@ -203,7 +266,8 @@ static void assRender(VSFrameRef *dst, VSFrameRef *alpha, const VSAPI *vsapi,
     }
 
     while(img) {
-        uint8_t *dstp, *alphap, *sp, color[4], outa;
+        uint8_t *dstp[4], *alphap, *sp, color[4];
+        uint16_t outa;
         int x, y, k;
 
         if(img->w == 0 || img->h == 0) {
@@ -216,26 +280,32 @@ static void assRender(VSFrameRef *dst, VSFrameRef *alpha, const VSAPI *vsapi,
         color[2] = _b(img->color);
         color[3] = _a(img->color);
 
-        for(p = 0; p < 4; p++) {
-            dstp = planes[p] + (strides[p] * img->dst_y) + img->dst_x;
-            alphap = planes[3] + (strides[3] * img->dst_y) + img->dst_x;
-            sp = img->bitmap;
+        dstp[0] = planes[0] + (strides[0] * img->dst_y) + img->dst_x;
+        dstp[1] = planes[1] + (strides[1] * img->dst_y) + img->dst_x;
+        dstp[2] = planes[2] + (strides[2] * img->dst_y) + img->dst_x;
+        dstp[3] = planes[3] + (strides[3] * img->dst_y) + img->dst_x;
+        alphap = dstp[3];
+        sp = img->bitmap;
 
-            for(y = 0; y < img->h; y++) {
-                for(x = 0; x < img->w; x++) {
-                    k = (sp[x] * color[3] + 255) >> 8;
-                    outa = (k * 255 + (alphap[x] * (255 - k)) + 255) >> 8;
+        for(y = 0; y < img->h; y++) {
+            for(x = 0; x < img->w; x++) {
+                k = div255(sp[x] * color[3]);
+                outa = k * 255 + (alphap[x] * (255 - k));
 
-                    if(p == 3)
-                        dstp[x] = outa;
-                    else if(outa != 0)
-                        dstp[x] = blend(k, color[p], alphap[x], dstp[x], outa);
+                if(outa != 0) {
+                    dstp[0][x] = blend(k, color[0], alphap[x], dstp[0][x], outa);
+                    dstp[1][x] = blend(k, color[1], alphap[x], dstp[1][x], outa);
+                    dstp[2][x] = blend(k, color[2], alphap[x], dstp[2][x], outa);
+                    dstp[3][x] = div255(outa);
                 }
-
-                dstp += strides[p];
-                alphap += strides[3];
-                sp += img->stride;
             }
+
+            dstp[0] += strides[0];
+            dstp[1] += strides[1];
+            dstp[2] += strides[2];
+            dstp[3] += strides[3];
+            alphap += strides[3];
+            sp += img->stride;
         }
 
         img = img->next;
@@ -250,30 +320,33 @@ static const VSFrameRef *VS_CC assGetFrame(int n, int activationReason,
     AssData *d = (AssData *) * instanceData;
 
     if(n != d->lastn) {
-        VSFrameRef *dst = vsapi->newVideoFrame(d->vi[0].format,
-                                               d->vi[0].width,
-                                               d->vi[0].height,
-                                               NULL, core);
-
-        VSFrameRef *a = vsapi->newVideoFrame(d->vi[1].format,
-                                             d->vi[1].width,
-                                             d->vi[1].height,
-                                             NULL, core);
-
         ASS_Image *img;
         int64_t ts = 0;
+        int changed;
 
-        if(d->file != NULL)
-            ts = (int64_t)n * 1000 * d->vi[0].fpsDen / d->vi[0].fpsNum;
+        ts = (int64_t)n * 1000 * d->vi[0].fpsDen / d->vi[0].fpsNum;
 
-        img = ass_render_frame(d->ass_renderer, d->ass, ts, NULL);
+        img = ass_render_frame(d->ass_renderer, d->ass, ts, &changed);
 
-        assRender(dst, a, vsapi, img);
+        if (changed) {
+            VSFrameRef *dst = vsapi->newVideoFrame(d->vi[0].format,
+                                                   d->vi[0].width,
+                                                   d->vi[0].height,
+                                                   NULL, core);
+
+            VSFrameRef *a = vsapi->newVideoFrame(d->vi[1].format,
+                                                 d->vi[1].width,
+                                                 d->vi[1].height,
+                                                 NULL, core);
+
+            assRender(dst, a, vsapi, img);
+            vsapi->freeFrame(d->lastframe);
+            vsapi->freeFrame(d->lastalpha);
+            d->lastframe = dst;
+            d->lastalpha = a;
+        }
+
         d->lastn = n;
-        vsapi->freeFrame(d->lastframe);
-        vsapi->freeFrame(d->lastalpha);
-        d->lastframe = dst;
-        d->lastalpha = a;
     }
 
     if(vsapi->getOutputIndex(frameCtx) == 0)
@@ -286,6 +359,8 @@ static void VS_CC assFree(void *instanceData, VSCore *core, const VSAPI *vsapi)
 {
     AssData *d = (AssData *)instanceData;
     vsapi->freeNode(d->node);
+    vsapi->freeFrame(d->lastframe);
+    vsapi->freeFrame(d->lastalpha);
     ass_renderer_done(d->ass_renderer);
     ass_library_done(d->ass_library);
     ass_free_track(d->ass);
@@ -319,6 +394,26 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 
         if(err) {
             d.style = "sans-serif,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,7,10,10,10,1";
+        }
+
+        d.startframe = int64ToIntS(vsapi->propGetInt(in, "start", 0, &err));
+        if (err) {
+            d.startframe = 0;
+        }
+        else if(d.startframe > d.vi[0].numFrames) {
+            vsapi->setError(out, "start must be smaller than the clip length");
+        }
+        
+        
+        d.endframe = int64ToIntS(vsapi->propGetInt(in, "end", 0, &err));
+        if(err) {
+            d.endframe = d.vi[0].numFrames;
+        }
+        else if(d.endframe > d.vi[0].numFrames) {
+            vsapi->setError(out, "end must be smaller than the clip length");
+        }
+        else if(!(d.startframe < d.endframe)) {
+            vsapi->setError(out, "end must be larger than start");
         }
     }
 
@@ -374,12 +469,8 @@ static void VS_CC assRenderCreate(const VSMap *in, VSMap *out, void *userData,
 }
 
 VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc,
-                                            VSRegisterFunction registerFunc,
-                                            VSPlugin *plugin);
-
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc,
-                                            VSRegisterFunction registerFunc,
-                                            VSPlugin *plugin)
+                                 VSRegisterFunction registerFunc,
+                                 VSPlugin *plugin)
 {
     configFunc("biz.srsfckn.vapour", "assvapour",
                "A subtitling filter based on libass.",
@@ -403,7 +494,9 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc,
                  "linespacing:float:opt;"
                  "margins:int[]:opt;"
                  "sar:float:opt;"
-                 "style:data:opt;",
+                 "style:data:opt;"
+                 "start:int:opt;"
+                 "end:int:opt;",
                  assRenderCreate, 0, plugin);
 }
 
